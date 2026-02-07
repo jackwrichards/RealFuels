@@ -158,36 +158,48 @@ namespace RealFuels
             return $"{name} [Subconfig {node.GetValue(PatchNameKey)}]";
         }
 
-        protected override void DrawConfigSelectors(IEnumerable<ConfigNode> availableConfigNodes)
+        protected override IEnumerable<ConfigRowDefinition> BuildConfigRows()
         {
-            foreach (var node in availableConfigNodes)
+            foreach (var node in FilteredDisplayConfigs(false))
             {
-                DrawSelectButton(
-                    node,
-                    node.GetValue("name") == configuration && activePatchName == "",
-                    (configName) =>
+                string configName = node.GetValue("name");
+                yield return new ConfigRowDefinition
+                {
+                    Node = node,
+                    DisplayName = GetConfigDisplayName(node),
+                    IsSelected = configName == configuration && activePatchName == "",
+                    Indent = false,
+                    Apply = () =>
                     {
                         activePatchName = "";
                         GUIApplyConfig(configName);
-                    });
+                    }
+                };
+
                 foreach (var patch in GetPatchesOfConfig(node))
                 {
                     var patchedNode = PatchConfig(node, patch, false);
                     string patchName = patch.GetValue("name");
-                    using (new GUILayout.HorizontalScope())
+                    string patchedConfigName = configName;
+                    yield return new ConfigRowDefinition
                     {
-                        GUILayout.Space(30);
-                        DrawSelectButton(
-                            patchedNode,
-                            node.GetValue("name") == configuration && patchName == activePatchName,
-                            (configName) =>
-                            {
-                                activePatchName = patchName;
-                                GUIApplyConfig(configName);
-                            });
-                    }
+                        Node = patchedNode,
+                        DisplayName = GetConfigDisplayName(patchedNode),
+                        IsSelected = patchedConfigName == configuration && patchName == activePatchName,
+                        Indent = true,
+                        Apply = () =>
+                        {
+                            activePatchName = patchName;
+                            GUIApplyConfig(patchedConfigName);
+                        }
+                    };
                 }
             }
+        }
+
+        protected override void DrawConfigSelectors(IEnumerable<ConfigNode> availableConfigNodes)
+        {
+            DrawConfigTable(BuildConfigRows());
         }
     }
 
@@ -474,7 +486,7 @@ namespace RealFuels
             field.group = new BasePAWGroup(groupName, groupDisplayName, false);
         }
 
-        private List<ConfigNode> FilteredDisplayConfigs(bool update)
+        protected List<ConfigNode> FilteredDisplayConfigs(bool update)
         {
             if (update || filteredDisplayConfigs == null)
             {
@@ -540,7 +552,10 @@ namespace RealFuels
 
             Fields[nameof(showRFGUI)].guiActiveEditor = isMaster;
             if (HighLogic.LoadedSceneIsEditor)
+            {
                 GameEvents.onPartActionUIDismiss.Add(OnPartActionGuiDismiss);
+                GameEvents.onPartActionUIShown.Add(OnPartActionUIShown);
+            }
 
             ConfigSaveLoad();
 
@@ -667,6 +682,24 @@ namespace RealFuels
                 ispSL *= ispSLMult * cTL.AtmosphereCurve.Evaluate(1);
                 ispV *= ispVMult * cTL.AtmosphereCurve.Evaluate(0);
                 info.Append($"  {Localizer.GetStringByTag("#RF_Engine_Isp")}: {ispSL:N0} - {ispV:N0}s\n"); // Isp
+            }
+
+            if (config.HasNode("PROPELLANT"))
+            {
+                var propellants = config.GetNodes("PROPELLANT")
+                    .Select(node =>
+                    {
+                        string name = node.GetValue("name");
+                        string ratioStr = null;
+                        if (node.TryGetValue("ratio", ref ratioStr) && float.TryParse(ratioStr, out float ratio))
+                            return $"{name} ({ratio:N3})";
+                        return name;
+                    })
+                    .Where(name => !string.IsNullOrWhiteSpace(name));
+
+                string propellantList = string.Join(", ", propellants);
+                if (!string.IsNullOrWhiteSpace(propellantList))
+                    info.Append($"  {Localizer.GetStringByTag("#RF_EngineRF_Propellant")}: {propellantList}\n");
             }
 
             if (config.HasValue("ratedBurnTime"))
@@ -1370,17 +1403,27 @@ namespace RealFuels
                 showRFGUI = false;
         }
 
+        private void OnPartActionUIShown(UIPartActionWindow window, Part p)
+        {
+            if (p == part)
+                showRFGUI = isMaster;
+        }
+
         public override void OnInactive()
         {
             if (!compatible)
                 return;
             if (HighLogic.LoadedSceneIsEditor)
+            {
                 GameEvents.onPartActionUIDismiss.Remove(OnPartActionGuiDismiss);
+                GameEvents.onPartActionUIShown.Remove(OnPartActionUIShown);
+            }
         }
 
         public void OnDestroy()
         {
             GameEvents.onPartActionUIDismiss.Remove(OnPartActionGuiDismiss);
+            GameEvents.onPartActionUIShown.Remove(OnPartActionUIShown);
         }
 
         private static Vector3 mousePos = Vector3.zero;
@@ -1388,6 +1431,19 @@ namespace RealFuels
         private string myToolTip = string.Empty;
         private int counterTT;
         private bool editorLocked = false;
+
+        private Vector2 configScrollPos = Vector2.zero;
+        private GUIContent configGuiContent;
+        private bool compactView = false;
+
+        private const int ConfigRowHeight = 22;
+        private const int ConfigMaxVisibleRows = 16; // Max rows before scrolling (60% taller)
+        // Dynamic column widths - calculated based on content
+        private float[] ConfigColumnWidths = new float[17];
+
+        private static Texture2D rowHoverTex;
+        private static Texture2D rowCurrentTex;
+        private static Texture2D rowLockedTex;
 
         private int toolTipWidth => EditorLogic.fetch.editorScreen == EditorScreen.Parts ? 220 : 300;
         private int toolTipHeight => (int)Styles.styleEditorTooltip.CalcHeight(new GUIContent(myToolTip), toolTipWidth);
@@ -1411,7 +1467,8 @@ namespace RealFuels
             {
                 int posAdd = inPartsEditor ? 256 : 0;
                 int posMult = (offsetGUIPos == -1) ? (part.Modules.Contains("ModuleFuelTanks") ? 1 : 0) : offsetGUIPos;
-                guiWindowRect = new Rect(posAdd + 430 * posMult, 365, 430, (Screen.height - 365));
+                // Set position, width and height will auto-size based on content
+                guiWindowRect = new Rect(posAdd + 430 * posMult, 365, 100, 0); // Start small, will grow
             }
 
             mousePos = Input.mousePosition; //Mouse location; based on Kerbal Engineer Redux code
@@ -1571,35 +1628,813 @@ namespace RealFuels
             }
         }
 
-        virtual protected void DrawConfigSelectors(IEnumerable<ConfigNode> availableConfigNodes)
+        protected struct ConfigRowDefinition
         {
-            foreach (ConfigNode node in availableConfigNodes)
-                DrawSelectButton(node, node.GetValue("name") == configuration, GUIApplyConfig);
+            public ConfigNode Node;
+            public string DisplayName;
+            public bool IsSelected;
+            public bool Indent;
+            public Action Apply;
         }
 
-        virtual protected void DrawPartInfo()
+        protected virtual IEnumerable<ConfigRowDefinition> BuildConfigRows()
         {
-            // show current info, cost
-            if (pModule != null && part.partInfo != null)
+            foreach (ConfigNode node in FilteredDisplayConfigs(false))
             {
-                GUILayout.BeginHorizontal();
-                string ratedBurnTime = string.Empty;
-                if (config.HasValue("ratedBurnTime"))
+                string configName = node.GetValue("name");
+                yield return new ConfigRowDefinition
                 {
-                    if (config.HasValue("ratedContinuousBurnTime"))
-                        ratedBurnTime = $"{Localizer.GetStringByTag("#RF_Engine_RatedBurnTime")}: {config.GetValue("ratedContinuousBurnTime")}/{config.GetValue("ratedBurnTime")}s\n"; // Rated burn time
-                    else
-                        ratedBurnTime = $"{Localizer.GetStringByTag("#RF_Engine_RatedBurnTime")}: {config.GetValue("ratedBurnTime")}s\n"; // Rated burn time
-                }
-                string label = $"<b>{Localizer.GetStringByTag("#RF_Engine_Enginemass")}:</b> {part.mass:N3}t\n" + // Engine mass
-                               $"{ratedBurnTime}" +
-                               $"{pModule.GetInfo()}\n" +
-                               $"{TLTInfo()}\n" +
-                               $"{Localizer.GetStringByTag("#RF_Engine_TotalCost")}: {part.partInfo.cost + part.GetModuleCosts(part.partInfo.cost):0}"; // Total cost
-                GUILayout.Label(label);
-                GUILayout.EndHorizontal();
+                    Node = node,
+                    DisplayName = GetConfigDisplayName(node),
+                    IsSelected = configName == configuration,
+                    Indent = false,
+                    Apply = () => GUIApplyConfig(configName)
+                };
             }
         }
+
+        protected void CalculateColumnWidths(List<ConfigRowDefinition> rows)
+        {
+            // Create style for measuring cell content
+            var cellStyle = new GUIStyle(GUI.skin.label)
+            {
+                fontSize = 14,
+                fontStyle = FontStyle.Bold,
+                padding = new RectOffset(5, 0, 0, 0)
+            };
+
+            // Initialize with minimum widths
+            for (int i = 0; i < ConfigColumnWidths.Length; i++)
+            {
+                ConfigColumnWidths[i] = 30f; // Start with minimum
+            }
+
+            // Measure all row content (ignore headers - they're rotated and centered)
+            foreach (var row in rows)
+            {
+                string nameText = row.DisplayName;
+                if (row.Indent) nameText = "↳ " + nameText;
+
+                string[] cellValues = new string[]
+                {
+                    nameText,
+                    GetThrustString(row.Node),
+                    GetMinThrottleString(row.Node),
+                    GetIspString(row.Node),
+                    GetMassString(row.Node),
+                    GetGimbalString(row.Node),
+                    GetIgnitionsString(row.Node),
+                    GetBoolSymbol(row.Node, "ullage"),
+                    GetBoolSymbol(row.Node, "pressureFed"),
+                    GetRatedBurnTimeString(row.Node),
+                    GetIgnitionReliabilityStartString(row.Node),
+                    GetIgnitionReliabilityEndString(row.Node),
+                    GetCycleReliabilityStartString(row.Node),
+                    GetCycleReliabilityEndString(row.Node),
+                    GetTechString(row.Node),
+                    GetCostDeltaString(row.Node),
+                    "" // Action column - buttons
+                };
+
+                for (int i = 0; i < cellValues.Length; i++)
+                {
+                    if (!string.IsNullOrEmpty(cellValues[i]))
+                    {
+                        float width = cellStyle.CalcSize(new GUIContent(cellValues[i])).x + 10f; // Add padding
+                        if (width > ConfigColumnWidths[i])
+                            ConfigColumnWidths[i] = width;
+                    }
+                }
+            }
+
+            // Action column needs fixed width for two buttons
+            ConfigColumnWidths[16] = 160f;
+
+            // Set minimum widths for specific columns
+            ConfigColumnWidths[7] = Mathf.Max(ConfigColumnWidths[7], 30f); // Ull
+            ConfigColumnWidths[8] = Mathf.Max(ConfigColumnWidths[8], 30f); // PFed
+            ConfigColumnWidths[9] = Mathf.Max(ConfigColumnWidths[9], 50f); // Rated burn
+        }
+
+        protected void DrawConfigTable(IEnumerable<ConfigRowDefinition> rows)
+        {
+            EnsureTableTextures();
+
+            var rowList = rows.ToList();
+
+            // Calculate dynamic column widths
+            CalculateColumnWidths(rowList);
+
+            // Sum only visible column widths
+            float totalWidth = 0f;
+            for (int i = 0; i < ConfigColumnWidths.Length; i++)
+            {
+                if (IsColumnVisible(i))
+                    totalWidth += ConfigColumnWidths[i];
+            }
+
+            // Update window width to fit table exactly (accounting for window padding: 5px left + 5px right = 10px)
+            float requiredWindowWidth = totalWidth + 10f; // Table width + padding
+            guiWindowRect.width = requiredWindowWidth;
+
+            Rect headerRowRect = GUILayoutUtility.GetRect(GUIContent.none, GUI.skin.label, GUILayout.Height(45));
+            float headerStartX = headerRowRect.x; // No left margin
+            DrawHeaderRow(new Rect(headerStartX, headerRowRect.y, totalWidth, headerRowRect.height));
+
+            // Dynamic height: grow up to max, then scroll
+            int actualRows = rowList.Count;
+            int visibleRows = Mathf.Min(actualRows, ConfigMaxVisibleRows);
+            int scrollViewHeight = visibleRows * ConfigRowHeight;
+
+            // No spacing in scroll view
+            var scrollStyle = new GUIStyle(GUI.skin.scrollView) { padding = new RectOffset(0, 0, 0, 0) };
+            configScrollPos = GUILayout.BeginScrollView(configScrollPos, false, false, GUIStyle.none, GUI.skin.verticalScrollbar, scrollStyle, GUILayout.Height(scrollViewHeight));
+
+            // Use a style with no margin/padding for tight row spacing
+            var noSpaceStyle = new GUIStyle { margin = new RectOffset(0, 0, 0, 0), padding = new RectOffset(0, 0, 0, 0) };
+
+            int rowIndex = 0;
+            foreach (var row in rowList)
+            {
+                Rect rowRect = GUILayoutUtility.GetRect(GUIContent.none, noSpaceStyle, GUILayout.Height(ConfigRowHeight));
+                float rowStartX = rowRect.x; // No left margin
+                Rect tableRowRect = new Rect(rowStartX, rowRect.y, totalWidth, rowRect.height);
+                bool isHovered = tableRowRect.Contains(Event.current.mousePosition);
+
+                bool isLocked = !CanConfig(row.Node);
+                if (Event.current.type == EventType.Repaint)
+                {
+                    // Draw alternating row background first
+                    if (!row.IsSelected && !isLocked && !isHovered && rowIndex % 2 == 1)
+                    {
+                        Color zebraColor = new Color(0.05f, 0.05f, 0.05f, 0.3f);
+                        GUI.DrawTexture(tableRowRect, Styles.CreateColorPixel(zebraColor));
+                    }
+
+                    if (row.IsSelected)
+                        GUI.DrawTexture(tableRowRect, rowCurrentTex);
+                    else if (isLocked)
+                        GUI.DrawTexture(tableRowRect, rowLockedTex);
+                    else if (isHovered)
+                        GUI.DrawTexture(tableRowRect, rowHoverTex);
+                }
+
+                string tooltip = GetRowTooltip(row.Node);
+                if (configGuiContent == null)
+                    configGuiContent = new GUIContent();
+                configGuiContent.text = string.Empty;
+                configGuiContent.tooltip = tooltip;
+                GUI.Label(tableRowRect, configGuiContent, GUIStyle.none);
+
+                DrawConfigRow(tableRowRect, row, isHovered, isLocked);
+
+                // Draw column separators
+                if (Event.current.type == EventType.Repaint)
+                {
+                    DrawColumnSeparators(tableRowRect);
+                }
+
+                rowIndex++;
+            }
+
+            GUILayout.EndScrollView();
+        }
+
+        private void DrawHeaderRow(Rect headerRect)
+        {
+            float currentX = headerRect.x;
+            if (IsColumnVisible(0)) {
+                DrawHeaderCell(new Rect(currentX, headerRect.y, ConfigColumnWidths[0], headerRect.height),
+                    "Name", "Configuration name");
+                currentX += ConfigColumnWidths[0];
+            }
+            if (IsColumnVisible(1)) {
+                DrawHeaderCell(new Rect(currentX, headerRect.y, ConfigColumnWidths[1], headerRect.height),
+                    Localizer.GetStringByTag("#RF_EngineRF_Thrust"), "Rated thrust");
+                currentX += ConfigColumnWidths[1];
+            }
+            if (IsColumnVisible(2)) {
+                DrawHeaderCell(new Rect(currentX, headerRect.y, ConfigColumnWidths[2], headerRect.height),
+                    "Min%", "Minimum throttle");
+                currentX += ConfigColumnWidths[2];
+            }
+            if (IsColumnVisible(3)) {
+                DrawHeaderCell(new Rect(currentX, headerRect.y, ConfigColumnWidths[3], headerRect.height),
+                    Localizer.GetStringByTag("#RF_Engine_Isp"), "Sea level and vacuum Isp");
+                currentX += ConfigColumnWidths[3];
+            }
+            if (IsColumnVisible(4)) {
+                DrawHeaderCell(new Rect(currentX, headerRect.y, ConfigColumnWidths[4], headerRect.height),
+                    Localizer.GetStringByTag("#RF_Engine_Enginemass"), "Engine mass");
+                currentX += ConfigColumnWidths[4];
+            }
+            if (IsColumnVisible(5)) {
+                DrawHeaderCell(new Rect(currentX, headerRect.y, ConfigColumnWidths[5], headerRect.height),
+                    Localizer.GetStringByTag("#RF_Engine_TLTInfo_Gimbal"), "Gimbal range");
+                currentX += ConfigColumnWidths[5];
+            }
+            if (IsColumnVisible(6)) {
+                DrawHeaderCell(new Rect(currentX, headerRect.y, ConfigColumnWidths[6], headerRect.height),
+                    Localizer.GetStringByTag("#RF_EngineRF_Ignitions"), "Ignitions");
+                currentX += ConfigColumnWidths[6];
+            }
+            if (IsColumnVisible(7)) {
+                DrawHeaderCell(new Rect(currentX, headerRect.y, ConfigColumnWidths[7], headerRect.height),
+                    Localizer.GetStringByTag("#RF_Engine_ullage"), "Ullage requirement");
+                currentX += ConfigColumnWidths[7];
+            }
+            if (IsColumnVisible(8)) {
+                DrawHeaderCell(new Rect(currentX, headerRect.y, ConfigColumnWidths[8], headerRect.height),
+                    Localizer.GetStringByTag("#RF_Engine_pressureFed"), "Pressure-fed");
+                currentX += ConfigColumnWidths[8];
+            }
+            if (IsColumnVisible(9)) {
+                DrawHeaderCell(new Rect(currentX, headerRect.y, ConfigColumnWidths[9], headerRect.height),
+                    "Rated (s)", "Rated burn time");
+                currentX += ConfigColumnWidths[9];
+            }
+            if (IsColumnVisible(10)) {
+                DrawHeaderCell(new Rect(currentX, headerRect.y, ConfigColumnWidths[10], headerRect.height),
+                    "Ign No Data", "Ignition reliability at 0 data");
+                currentX += ConfigColumnWidths[10];
+            }
+            if (IsColumnVisible(11)) {
+                DrawHeaderCell(new Rect(currentX, headerRect.y, ConfigColumnWidths[11], headerRect.height),
+                    "Ign Max Data", "Ignition reliability at max data");
+                currentX += ConfigColumnWidths[11];
+            }
+            if (IsColumnVisible(12)) {
+                DrawHeaderCell(new Rect(currentX, headerRect.y, ConfigColumnWidths[12], headerRect.height),
+                    "Burn No Data", "Cycle reliability at 0 data");
+                currentX += ConfigColumnWidths[12];
+            }
+            if (IsColumnVisible(13)) {
+                DrawHeaderCell(new Rect(currentX, headerRect.y, ConfigColumnWidths[13], headerRect.height),
+                    "Burn Max Data", "Cycle reliability at max data");
+                currentX += ConfigColumnWidths[13];
+            }
+            if (IsColumnVisible(14)) {
+                DrawHeaderCell(new Rect(currentX, headerRect.y, ConfigColumnWidths[14], headerRect.height),
+                    Localizer.GetStringByTag("#RF_Engine_Requires"), "Required technology");
+                currentX += ConfigColumnWidths[14];
+            }
+            if (IsColumnVisible(15)) {
+                DrawHeaderCell(new Rect(currentX, headerRect.y, ConfigColumnWidths[15], headerRect.height),
+                    "Extra Cost", "Extra cost for this config");
+                currentX += ConfigColumnWidths[15];
+            }
+            if (IsColumnVisible(16)) {
+                DrawHeaderCell(new Rect(currentX, headerRect.y, ConfigColumnWidths[16], headerRect.height),
+                    "", "Switch and purchase actions"); // No label, just tooltip
+            }
+        }
+
+        private void DrawColumnSeparators(Rect rowRect)
+        {
+            Color separatorColor = new Color(0.25f, 0.25f, 0.25f, 0.9f); // Darker and more opaque
+            Texture2D separatorTex = Styles.CreateColorPixel(separatorColor);
+
+            float currentX = rowRect.x;
+            for (int i = 0; i < ConfigColumnWidths.Length - 1; i++)
+            {
+                if (IsColumnVisible(i))
+                {
+                    currentX += ConfigColumnWidths[i];
+                    Rect separatorRect = new Rect(currentX, rowRect.y, 1, rowRect.height);
+                    GUI.DrawTexture(separatorRect, separatorTex);
+                }
+            }
+        }
+
+        private void DrawHeaderCell(Rect rect, string text, string tooltip)
+        {
+            bool hover = rect.Contains(Event.current.mousePosition);
+            var headerStyle = new GUIStyle(GUI.skin.label)
+            {
+                fontSize = hover ? 15 : 14,
+                fontStyle = FontStyle.Bold,
+                normal = { textColor = new Color(0.9f, 0.9f, 0.9f) },
+                alignment = TextAnchor.LowerLeft,
+                richText = true
+            };
+            if (configGuiContent == null)
+                configGuiContent = new GUIContent();
+            configGuiContent.text = text;
+            configGuiContent.tooltip = tooltip;
+            Matrix4x4 matrixBackup = GUI.matrix;
+            // Start text at horizontal center of column
+            float offsetX = rect.width / 2f;
+            Vector2 pivot = new Vector2(rect.x + offsetX, rect.y + rect.height + 4f);
+            GUIUtility.RotateAroundPivot(-45f, pivot);
+            GUI.Label(new Rect(rect.x + offsetX, rect.y + rect.height - 22f, 140f, 24f), configGuiContent, headerStyle);
+            GUI.matrix = matrixBackup;
+        }
+
+        private void DrawConfigRow(Rect rowRect, ConfigRowDefinition row, bool isHovered, bool isLocked)
+        {
+            var primaryStyle = new GUIStyle(GUI.skin.label)
+            {
+                fontSize = isHovered ? 15 : 14,
+                fontStyle = FontStyle.Bold,
+                normal = { textColor = isLocked ? new Color(1f, 0.65f, 0.3f) : new Color(0.85f, 0.85f, 0.85f) },
+                alignment = TextAnchor.MiddleLeft,
+                richText = true,
+                padding = new RectOffset(5, 0, 0, 0) // Add left padding
+            };
+            var secondaryStyle = new GUIStyle(primaryStyle)
+            {
+                normal = { textColor = new Color(0.7f, 0.7f, 0.7f) }
+            };
+
+            float currentX = rowRect.x;
+            string nameText = row.DisplayName;
+            if (row.Indent) nameText = "↳ " + nameText;
+
+            if (IsColumnVisible(0)) {
+                GUI.Label(new Rect(currentX, rowRect.y, ConfigColumnWidths[0], rowRect.height), nameText, primaryStyle);
+                currentX += ConfigColumnWidths[0];
+            }
+
+            if (IsColumnVisible(1)) {
+                GUI.Label(new Rect(currentX, rowRect.y, ConfigColumnWidths[1], rowRect.height), GetThrustString(row.Node), secondaryStyle);
+                currentX += ConfigColumnWidths[1];
+            }
+
+            if (IsColumnVisible(2)) {
+                GUI.Label(new Rect(currentX, rowRect.y, ConfigColumnWidths[2], rowRect.height), GetMinThrottleString(row.Node), secondaryStyle);
+                currentX += ConfigColumnWidths[2];
+            }
+
+            if (IsColumnVisible(3)) {
+                GUI.Label(new Rect(currentX, rowRect.y, ConfigColumnWidths[3], rowRect.height), GetIspString(row.Node), secondaryStyle);
+                currentX += ConfigColumnWidths[3];
+            }
+
+            if (IsColumnVisible(4)) {
+                GUI.Label(new Rect(currentX, rowRect.y, ConfigColumnWidths[4], rowRect.height), GetMassString(row.Node), secondaryStyle);
+                currentX += ConfigColumnWidths[4];
+            }
+
+            if (IsColumnVisible(5)) {
+                GUI.Label(new Rect(currentX, rowRect.y, ConfigColumnWidths[5], rowRect.height), GetGimbalString(row.Node), secondaryStyle);
+                currentX += ConfigColumnWidths[5];
+            }
+
+            if (IsColumnVisible(6)) {
+                GUI.Label(new Rect(currentX, rowRect.y, ConfigColumnWidths[6], rowRect.height), GetIgnitionsString(row.Node), secondaryStyle);
+                currentX += ConfigColumnWidths[6];
+            }
+
+            if (IsColumnVisible(7)) {
+                GUI.Label(new Rect(currentX, rowRect.y, ConfigColumnWidths[7], rowRect.height), GetBoolSymbol(row.Node, "ullage"), secondaryStyle);
+                currentX += ConfigColumnWidths[7];
+            }
+
+            if (IsColumnVisible(8)) {
+                GUI.Label(new Rect(currentX, rowRect.y, ConfigColumnWidths[8], rowRect.height), GetBoolSymbol(row.Node, "pressureFed"), secondaryStyle);
+                currentX += ConfigColumnWidths[8];
+            }
+
+            if (IsColumnVisible(9)) {
+                GUI.Label(new Rect(currentX, rowRect.y, ConfigColumnWidths[9], rowRect.height), GetRatedBurnTimeString(row.Node), secondaryStyle);
+                currentX += ConfigColumnWidths[9];
+            }
+
+            if (IsColumnVisible(10)) {
+                GUI.Label(new Rect(currentX, rowRect.y, ConfigColumnWidths[10], rowRect.height), GetIgnitionReliabilityStartString(row.Node), secondaryStyle);
+                currentX += ConfigColumnWidths[10];
+            }
+
+            if (IsColumnVisible(11)) {
+                GUI.Label(new Rect(currentX, rowRect.y, ConfigColumnWidths[11], rowRect.height), GetIgnitionReliabilityEndString(row.Node), secondaryStyle);
+                currentX += ConfigColumnWidths[11];
+            }
+
+            if (IsColumnVisible(12)) {
+                GUI.Label(new Rect(currentX, rowRect.y, ConfigColumnWidths[12], rowRect.height), GetCycleReliabilityStartString(row.Node), secondaryStyle);
+                currentX += ConfigColumnWidths[12];
+            }
+
+            if (IsColumnVisible(13)) {
+                GUI.Label(new Rect(currentX, rowRect.y, ConfigColumnWidths[13], rowRect.height), GetCycleReliabilityEndString(row.Node), secondaryStyle);
+                currentX += ConfigColumnWidths[13];
+            }
+
+            if (IsColumnVisible(14)) {
+                GUI.Label(new Rect(currentX, rowRect.y, ConfigColumnWidths[14], rowRect.height), GetTechString(row.Node), secondaryStyle);
+                currentX += ConfigColumnWidths[14];
+            }
+
+            if (IsColumnVisible(15)) {
+                GUI.Label(new Rect(currentX, rowRect.y, ConfigColumnWidths[15], rowRect.height), GetCostDeltaString(row.Node), secondaryStyle);
+                currentX += ConfigColumnWidths[15];
+            }
+
+            if (IsColumnVisible(16)) {
+                DrawActionCell(new Rect(currentX, rowRect.y + 1, ConfigColumnWidths[16], rowRect.height - 2), row.Node, row.IsSelected, row.Apply);
+            }
+        }
+
+        private void DrawActionCell(Rect rect, ConfigNode node, bool isSelected, Action apply)
+        {
+            var buttonStyle = HighLogic.Skin.button;
+            var smallButtonStyle = new GUIStyle(buttonStyle)
+            {
+                fontSize = 11,
+                padding = new RectOffset(2, 2, 2, 2)
+            };
+
+            string configName = node.GetValue("name");
+            bool canUse = CanConfig(node);
+            bool unlocked = UnlockedConfig(node, part);
+            double cost = EntryCostManager.Instance.ConfigEntryCost(configName);
+
+            // Auto-purchase free configs
+            if (cost <= 0 && !unlocked && canUse)
+                EntryCostManager.Instance.PurchaseConfig(configName, node.GetValue("techRequired"));
+
+            // Split the rect into two buttons side by side
+            float buttonWidth = rect.width / 2f - 2f;
+            Rect switchRect = new Rect(rect.x, rect.y, buttonWidth, rect.height);
+            Rect purchaseRect = new Rect(rect.x + buttonWidth + 4f, rect.y, buttonWidth, rect.height);
+
+            // Switch button - always enabled except when already selected
+            GUI.enabled = !isSelected;
+            string switchLabel = isSelected ? "Active" : "Switch";
+            if (GUI.Button(switchRect, switchLabel, smallButtonStyle))
+            {
+                if (!unlocked && cost <= 0)
+                    EntryCostManager.Instance.PurchaseConfig(configName, node.GetValue("techRequired"));
+                apply?.Invoke();
+            }
+
+            // Purchase button (shows cost)
+            GUI.enabled = canUse && !unlocked && cost > 0;
+            string purchaseLabel = cost > 0 ? $"Buy ({cost:N0}f)" : "Free";
+            if (GUI.Button(purchaseRect, purchaseLabel, smallButtonStyle))
+            {
+                if (EntryCostManager.Instance.PurchaseConfig(configName, node.GetValue("techRequired")))
+                    apply?.Invoke();
+            }
+
+            GUI.enabled = true;
+        }
+
+        private string GetThrustString(ConfigNode node)
+        {
+            if (!node.HasValue(thrustRating))
+                return "-";
+
+            return Utilities.FormatThrust(scale * ThrustTL(node.GetValue(thrustRating), node));
+        }
+
+        private string GetMinThrottleString(ConfigNode node)
+        {
+            float value = -1f;
+            if (node.HasValue("minThrust") && node.HasValue(thrustRating))
+            {
+                float.TryParse(node.GetValue("minThrust"), out float minT);
+                float.TryParse(node.GetValue(thrustRating), out float maxT);
+                if (maxT > 0)
+                    value = minT / maxT;
+            }
+            else if (node.HasValue("throttle"))
+            {
+                float.TryParse(node.GetValue("throttle"), out value);
+            }
+
+            if (value < 0f)
+                return "-";
+            return value.ToString("P0");
+        }
+
+        private string GetIspString(ConfigNode node)
+        {
+            if (node.HasNode("atmosphereCurve"))
+            {
+                FloatCurve isp = new FloatCurve();
+                isp.Load(node.GetNode("atmosphereCurve"));
+                float ispVac = isp.Evaluate(isp.maxTime);
+                float ispSL = isp.Evaluate(isp.minTime);
+                return $"{ispVac:N0}-{ispSL:N0}";
+            }
+
+            if (node.HasValue("IspSL") && node.HasValue("IspV"))
+            {
+                float.TryParse(node.GetValue("IspSL"), out float ispSL);
+                float.TryParse(node.GetValue("IspV"), out float ispV);
+                if (techLevel != -1)
+                {
+                    TechLevel cTL = new TechLevel();
+                    if (cTL.Load(node, techNodes, engineType, techLevel))
+                    {
+                        ispSL *= ispSLMult * cTL.AtmosphereCurve.Evaluate(1);
+                        ispV *= ispVMult * cTL.AtmosphereCurve.Evaluate(0);
+                    }
+                }
+                return $"{ispV:N0}-{ispSL:N0}";
+            }
+
+            return "-";
+        }
+
+        private string GetMassString(ConfigNode node)
+        {
+            if (origMass <= 0f)
+                return "-";
+
+            float cMass = scale * origMass * RFSettings.Instance.EngineMassMultiplier;
+            if (node.HasValue("massMult") && float.TryParse(node.GetValue("massMult"), out float ftmp))
+                cMass *= ftmp;
+
+            return $"{cMass:N3}t";
+        }
+
+        private string GetGimbalString(ConfigNode node)
+        {
+            if (!part.HasModuleImplementing<ModuleGimbal>())
+                return "<color=#9E9E9E>✗</color>";
+
+            var gimbals = ExtractGimbals(node);
+
+            // If no explicit gimbal in config, check if we should use tech level gimbal
+            if (gimbals.Count == 0 && techLevel != -1 && (!gimbalTransform.Equals(string.Empty) || useGimbalAnyway))
+            {
+                TechLevel cTL = new TechLevel();
+                if (cTL.Load(node, techNodes, engineType, techLevel))
+                {
+                    float gimbalRange = cTL.GimbalRange;
+                    if (node.HasValue("gimbalMult"))
+                        gimbalRange *= float.Parse(node.GetValue("gimbalMult"));
+
+                    if (gimbalRange >= 0)
+                        return $"{gimbalRange * gimbalMult:N1}d";
+                }
+            }
+
+            // Fallback: if config has no gimbal data, use the part's ModuleGimbal
+            if (gimbals.Count == 0)
+            {
+                foreach (var gimbalMod in part.Modules.OfType<ModuleGimbal>())
+                {
+                    if (gimbalMod != null)
+                    {
+                        var gimbal = new Gimbal(gimbalMod.gimbalRange, gimbalMod.gimbalRange, gimbalMod.gimbalRange, gimbalMod.gimbalRange, gimbalMod.gimbalRange);
+                        gimbals[gimbalMod.gimbalTransformName] = gimbal;
+                    }
+                }
+            }
+
+            if (gimbals.Count == 0)
+                return "<color=#9E9E9E>✗</color>";
+
+            var first = gimbals.Values.First();
+            bool allSame = gimbals.Values.All(g => g.gimbalRange == first.gimbalRange
+                && g.gimbalRangeXP == first.gimbalRangeXP
+                && g.gimbalRangeXN == first.gimbalRangeXN
+                && g.gimbalRangeYP == first.gimbalRangeYP
+                && g.gimbalRangeYN == first.gimbalRangeYN);
+
+            if (allSame)
+                return first.Info();
+
+            // Multiple different gimbal ranges - list them all
+            var uniqueInfos = gimbals.Values.Select(g => g.Info()).Distinct().OrderBy(s => s);
+            return string.Join(", ", uniqueInfos);
+        }
+
+        private string GetIgnitionsString(ConfigNode node)
+        {
+            if (!node.HasValue("ignitions"))
+                return "-";
+
+            if (!int.TryParse(node.GetValue("ignitions"), out int ignitions))
+                return "∞";
+
+            int resolved = ConfigIgnitions(ignitions);
+            if (resolved == -1)
+                return "∞";
+            if (resolved == 0 && literalZeroIgnitions)
+                return "<color=#FFEB3B>Gnd</color>"; // Yellow G for ground-only ignitions
+            return resolved.ToString();
+        }
+
+        private string GetBoolSymbol(ConfigNode node, string key)
+        {
+            if (!node.HasValue(key))
+                return "<color=#9E9E9E>✗</color>"; // Treat missing as false - gray (no restriction)
+            bool isTrue = node.GetValue(key).ToLower() == "true";
+            return isTrue ? "<color=#FFA726>✓</color>" : "<color=#9E9E9E>✗</color>"; // Orange for restriction, gray for no restriction
+        }
+
+        private bool IsColumnVisible(int columnIndex)
+        {
+            if (!compactView)
+                return true; // All columns visible in full view
+
+            // Compact view: show only essential columns
+            // 0: Name, 1: Thrust, 3: ISP, 4: Mass, 6: Ignitions, 9: Burn Time, 14: Tech, 15: Cost, 16: Actions
+            return columnIndex == 0 || columnIndex == 1 || columnIndex == 3 || columnIndex == 4 ||
+                   columnIndex == 6 || columnIndex == 9 || columnIndex == 14 || columnIndex == 15 || columnIndex == 16;
+        }
+
+        private string GetRatedBurnTimeString(ConfigNode node)
+        {
+            bool hasRatedBurnTime = node.HasValue("ratedBurnTime");
+            bool hasRatedContinuousBurnTime = node.HasValue("ratedContinuousBurnTime");
+
+            if (!hasRatedBurnTime && !hasRatedContinuousBurnTime)
+                return "∞";
+
+            // If both values exist, show as "continuous/cumulative"
+            if (hasRatedBurnTime && hasRatedContinuousBurnTime)
+            {
+                string continuous = node.GetValue("ratedBurnTime");
+                string cumulative = node.GetValue("ratedContinuousBurnTime");
+                return $"{continuous}/{cumulative}";
+            }
+
+            // Otherwise show whichever one exists
+            return hasRatedBurnTime ? node.GetValue("ratedBurnTime") : node.GetValue("ratedContinuousBurnTime");
+        }
+
+        private string GetIgnitionReliabilityStartString(ConfigNode node)
+        {
+            if (!node.HasValue("ignitionReliabilityStart"))
+                return "∞";
+            if (float.TryParse(node.GetValue("ignitionReliabilityStart"), out float val))
+                return $"{val:P1}";
+            return "∞";
+        }
+
+        private string GetIgnitionReliabilityEndString(ConfigNode node)
+        {
+            if (!node.HasValue("ignitionReliabilityEnd"))
+                return "∞";
+            if (float.TryParse(node.GetValue("ignitionReliabilityEnd"), out float val))
+                return $"{val:P1}";
+            return "∞";
+        }
+
+        private string GetCycleReliabilityStartString(ConfigNode node)
+        {
+            if (!node.HasValue("cycleReliabilityStart"))
+                return "∞";
+            if (float.TryParse(node.GetValue("cycleReliabilityStart"), out float val))
+                return $"{val:P1}";
+            return "∞";
+        }
+
+        private string GetCycleReliabilityEndString(ConfigNode node)
+        {
+            if (!node.HasValue("cycleReliabilityEnd"))
+                return "∞";
+            if (float.TryParse(node.GetValue("cycleReliabilityEnd"), out float val))
+                return $"{val:P1}";
+            return "∞";
+        }
+
+        private string GetTechString(ConfigNode node)
+        {
+            if (!node.HasValue("techRequired"))
+                return "-";
+
+            string tech = node.GetValue("techRequired");
+            if (techNameToTitle.TryGetValue(tech, out string title))
+                return title;
+            return tech;
+        }
+
+        private string GetCostDeltaString(ConfigNode node)
+        {
+            if (!node.HasValue("cost"))
+                return "-";
+
+            float curCost = scale * float.Parse(node.GetValue("cost"));
+            if (techLevel != -1)
+                curCost = CostTL(curCost, node) - CostTL(0f, node);
+
+            if (Mathf.Approximately(curCost, 0f))
+                return "-";
+
+            string sign = curCost < 0 ? string.Empty : "+";
+            return $"{sign}{curCost:N0}f";
+        }
+
+        #region Removed TestFlight UI Integration
+        // All TestFlight column display code removed due to:
+        // 1. Data spread across multiple modules (TestFlightCore, TestFlightFailure_IgnitionFail)
+        // 2. Reliability/MTBF values require complex calculations, not simple field access
+        // 3. Reflection-based approach was error-prone and caused GUI crashes
+        //
+        // TestFlight integration still works via UpdateTFInterops() to notify TestFlight
+        // of active configuration changes. TestFlight UI displays its own data.
+        //
+        // Removed methods:
+        // - GetFlightDataString, GetIgnitionChanceString, GetIgnitionChanceAtMaxDataString
+        // - GetReliabilityString, GetReliabilityAtMaxDataString
+        // - TryGetTestFlightStats, GetAllTestFlightDataSources, GetTestFlightDataSource
+        // - TryGetConfigDataSource, TryGetNumber, TryGetMemberValue, TryGetStringMember
+        // - TryConvertToDouble, FormatPercent
+        // - TestFlightStats struct
+        #endregion
+
+        private string GetRowTooltip(ConfigNode node)
+        {
+            List<string> tooltipParts = new List<string>();
+
+            // Add description if present
+            if (node.HasValue("description"))
+                tooltipParts.Add(node.GetValue("description"));
+
+            // Add propellants with flow rates if present
+            if (node.HasNode("PROPELLANT"))
+            {
+                // Get thrust and ISP for flow calculations
+                float thrust = 0f;
+                float isp = 0f;
+
+                if (node.HasValue(thrustRating) && float.TryParse(node.GetValue(thrustRating), out float maxThrust))
+                    thrust = ThrustTL(node.GetValue(thrustRating), node) * scale;
+
+                if (node.HasNode("atmosphereCurve"))
+                {
+                    var atmCurve = new FloatCurve();
+                    atmCurve.Load(node.GetNode("atmosphereCurve"));
+                    isp = atmCurve.Evaluate(0f); // Vacuum ISP
+                }
+
+                // Calculate total mass flow: F = mdot * Isp * g0
+                const float g0 = 9.80665f;
+                float totalMassFlow = (thrust > 0f && isp > 0f) ? thrust / (isp * g0) : 0f;
+
+                // Get propellant ratios
+                var propNodes = node.GetNodes("PROPELLANT");
+                float totalRatio = 0f;
+                foreach (var propNode in propNodes)
+                {
+                    string ratioStr = null;
+                    if (propNode.TryGetValue("ratio", ref ratioStr) && float.TryParse(ratioStr, out float ratio))
+                        totalRatio += ratio;
+                }
+
+                var propellantLines = new List<string>();
+                foreach (var propNode in propNodes)
+                {
+                    string name = propNode.GetValue("name");
+                    if (string.IsNullOrWhiteSpace(name)) continue;
+
+                    string line = $"  • {name}";
+
+                    string ratioStr2 = null;
+                    if (propNode.TryGetValue("ratio", ref ratioStr2) && float.TryParse(ratioStr2, out float ratio) && totalMassFlow > 0f && totalRatio > 0f)
+                    {
+                        float propMassFlow = totalMassFlow * (ratio / totalRatio);
+
+                        // Get density from resource library
+                        var resource = PartResourceLibrary.Instance?.GetDefinition(name);
+
+                        // Format mass flow: use grams if < 1 kg/s for better precision
+                        string massFlowStr = propMassFlow >= 1f
+                            ? $"{propMassFlow:F2} kg/s"
+                            : $"{propMassFlow * 1000f:F1} g/s";
+
+                        if (resource != null)
+                        {
+                            float volumeFlow = propMassFlow / (float)resource.density;
+                            line += $": {volumeFlow:F2} L/s ({massFlowStr})";
+                        }
+                        else
+                        {
+                            line += $": {massFlowStr}";
+                        }
+                    }
+
+                    propellantLines.Add(line);
+                }
+
+                if (propellantLines.Count > 0)
+                    tooltipParts.Add($"<b>Propellant Consumption:</b>\n{string.Join("\n", propellantLines)}");
+            }
+
+            return tooltipParts.Count > 0 ? string.Join("\n\n", tooltipParts) : string.Empty;
+        }
+
+        private void EnsureTableTextures()
+        {
+            if (rowHoverTex == null)
+                rowHoverTex = Styles.CreateColorPixel(new Color(1f, 1f, 1f, 0.05f));
+            if (rowCurrentTex == null)
+                rowCurrentTex = Styles.CreateColorPixel(new Color(0.3f, 0.6f, 1.0f, 0.20f)); // Subtle blue tint
+            if (rowLockedTex == null)
+                rowLockedTex = Styles.CreateColorPixel(new Color(1f, 0.5f, 0.3f, 0.15f)); // Subtle orange tint
+        }
+
+        virtual protected void DrawConfigSelectors(IEnumerable<ConfigNode> availableConfigNodes)
+        {
+            DrawConfigTable(BuildConfigRows());
+        }
+
 
         protected void DrawTechLevelSelector()
         {
@@ -1682,16 +2517,23 @@ namespace RealFuels
 
         private void EngineManagerGUI(int WindowID)
         {
-            GUILayout.Space(20);
+            GUILayout.Space(6); // Breathing room at top
 
             GUILayout.BeginHorizontal();
             GUILayout.Label(EditorDescription);
+            GUILayout.FlexibleSpace();
+            if (GUILayout.Button(compactView ? "Full View" : "Compact View", GUILayout.Width(100)))
+            {
+                compactView = !compactView;
+            }
             GUILayout.EndHorizontal();
 
+            GUILayout.Space(6); // Space before table
             DrawConfigSelectors(FilteredDisplayConfigs(false));
 
             DrawTechLevelSelector();
-            DrawPartInfo();
+
+            GUILayout.Space(-80); // Remove all bottom padding - window ends right at table
 
             if (!myToolTip.Equals(string.Empty) && GUI.tooltip.Equals(string.Empty))
             {

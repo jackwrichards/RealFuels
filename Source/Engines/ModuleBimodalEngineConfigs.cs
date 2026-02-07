@@ -121,34 +121,35 @@ namespace RealFuels
             return info;
         }
 
+        protected override IEnumerable<ConfigRowDefinition> BuildConfigRows()
+        {
+            foreach (var node in FilteredDisplayConfigs(false))
+            {
+                bool hasSecondary = ConfigHasSecondary(node);
+                var nodeApplied = IsSecondaryMode && hasSecondary ? SecondaryConfig(node) : node;
+                string configName = node.GetValue("name");
+                yield return new ConfigRowDefinition
+                {
+                    Node = nodeApplied,
+                    DisplayName = GetConfigDisplayName(nodeApplied),
+                    IsSelected = configName == configuration,
+                    Indent = false,
+                    Apply = () =>
+                    {
+                        activePatchName = IsSecondaryMode && hasSecondary ? SecondaryPatchName(node) : "";
+                        GUIApplyConfig(configName);
+                    }
+                };
+            }
+        }
+
         protected override void DrawConfigSelectors(IEnumerable<ConfigNode> availableConfigNodes)
         {
             if (GUILayout.Button(new GUIContent(ToggleText, toggleButtonHoverInfo)))
                 ToggleMode();
-            foreach (var node in availableConfigNodes)
-            {
-                bool hasSecondary = ConfigHasSecondary(node);
-                var nodeApplied = IsSecondaryMode && hasSecondary ? SecondaryConfig(node) : node;
-                DrawSelectButton(
-                    nodeApplied,
-                    node.GetValue("name") == configuration,
-                    (configName) =>
-                    {
-                        activePatchName = IsSecondaryMode && hasSecondary ? SecondaryPatchName(node) : "";
-                        GUIApplyConfig(configName);
-                    });
-            }
-        }
 
-        protected override void DrawPartInfo()
-        {
-            using (new GUILayout.HorizontalScope())
-            {
-                GUILayout.Label($"<b>{Localizer.GetStringByTag("#RF_BimodalEngine_Currentmode")}:</b> {ActiveModeDescription}"); // Current mode
-            }
-            base.DrawPartInfo();
+            DrawConfigTable(BuildConfigRows());
         }
-
 
         [KSPAction("#RF_BimodalEngine_ToggleEngineMode")] // Toggle Engine Mode
         public void ToggleAction(KSPActionParam _) => ToggleMode();
