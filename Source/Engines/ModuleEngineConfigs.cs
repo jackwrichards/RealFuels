@@ -1428,7 +1428,11 @@ namespace RealFuels
         }
 
         private static Vector3 mousePos = Vector3.zero;
-        private Rect guiWindowRect = new Rect(0, 0, 0, 0);
+        private static Rect guiWindowRect = new Rect(0, 0, 0, 0);
+        private static uint lastPartId = 0;
+        private static int lastConfigCount = 0;
+        private static bool lastCompactView = false;
+        private static bool lastHasChart = false;
         private string myToolTip = string.Empty;
         private int counterTT;
         private bool editorLocked = false;
@@ -1439,17 +1443,33 @@ namespace RealFuels
         private bool useLogScaleX = false; // Toggle for logarithmic x-axis on failure chart
         private bool useLogScaleY = false; // Toggle for logarithmic y-axis on failure chart
 
+        // Column visibility customization
+        private bool showColumnMenu = false;
+        private static Rect columnMenuRect = new Rect(100, 100, 280, 650); // Separate window rect - tall enough for all columns
+        private static bool[] columnsVisibleFull = new bool[19];
+        private static bool[] columnsVisibleCompact = new bool[19];
+        private static bool columnVisibilityInitialized = false;
+
         // Simulation controls for data percentage and cluster size
         private bool useSimulatedData = false; // Whether to override real TestFlight data
-        private float simulatedDataPercentage = 0f; // Simulated data percentage (0-1)
+        private float simulatedDataValue = 0f; // Simulated data value in du (data units)
         private int clusterSize = 1; // Number of engines in cluster (default 1)
         private string clusterSizeInput = "1"; // Text input for cluster size
-        private string dataPercentageInput = "0"; // Text input for data percentage
+        private string dataValueInput = "0"; // Text input for data value in du
+
+        // Chart axis limit controls
+        private bool useCustomAxisLimits = false; // Whether to use custom axis limits
+        private float customMaxTime = 0f; // Custom max time for X axis
+        private float customMaxFailProb = 0f; // Custom max failure probability for Y axis (0-1 scale)
+        private float autoMaxTime = 0f; // Auto-calculated max time (for reset)
+        private float autoMaxFailProb = 0f; // Auto-calculated max failure prob (for reset)
+        private string maxTimeInput = "0"; // Text input for max time
+        private string maxFailProbInput = "0"; // Text input for max failure prob
 
         private const int ConfigRowHeight = 22;
         private const int ConfigMaxVisibleRows = 16; // Max rows before scrolling (60% taller)
         // Dynamic column widths - calculated based on content
-        private float[] ConfigColumnWidths = new float[18];
+        private float[] ConfigColumnWidths = new float[19]; // Added du column
 
         private static Texture2D rowHoverTex;
         private static Texture2D rowCurrentTex;
@@ -1502,8 +1522,31 @@ namespace RealFuels
             {
                 int posAdd = inPartsEditor ? 256 : 0;
                 int posMult = (offsetGUIPos == -1) ? (part.Modules.Contains("ModuleFuelTanks") ? 1 : 0) : offsetGUIPos;
-                // Set position, width and height will auto-size based on content
-                guiWindowRect = new Rect(posAdd + 430 * posMult, 365, 100, 0); // Start small, will grow
+                // Set position with minimal initial size - both width and height will auto-size tightly
+                guiWindowRect = new Rect(posAdd + 430 * posMult, 365, 100, 100);
+            }
+
+            // Only reset height when switching parts or when content changes (compact view, config count, chart visibility)
+            // This prevents flickering during dragging and slider interaction
+            uint currentPartId = part.persistentId;
+            int currentConfigCount = FilteredDisplayConfigs(false).Count;
+            bool currentHasChart = config != null && config.HasValue("cycleReliabilityStart");
+            bool contentChanged = currentPartId != lastPartId
+                               || currentConfigCount != lastConfigCount
+                               || compactView != lastCompactView
+                               || currentHasChart != lastHasChart;
+
+            if (contentChanged)
+            {
+                float savedX = guiWindowRect.x;
+                float savedY = guiWindowRect.y;
+                float savedWidth = guiWindowRect.width;
+                guiWindowRect = new Rect(savedX, savedY, savedWidth, 100);
+
+                lastPartId = currentPartId;
+                lastConfigCount = currentConfigCount;
+                lastCompactView = compactView;
+                lastHasChart = currentHasChart;
             }
 
             mousePos = Input.mousePosition; //Mouse location; based on Kerbal Engineer Redux code
@@ -1521,6 +1564,18 @@ namespace RealFuels
             }
 
             guiWindowRect = GUILayout.Window(unchecked((int)part.persistentId), guiWindowRect, EngineManagerGUI, Localizer.Format("#RF_Engine_WindowTitle", part.partInfo.title), Styles.styleEditorPanel); // "Configure " + part.partInfo.title
+
+            // Draw column menu as separate window if open
+            if (showColumnMenu)
+            {
+                columnMenuRect = GUI.Window(unchecked((int)part.persistentId) + 1, columnMenuRect, DrawColumnMenuWindow, "Settings", HighLogic.Skin.window);
+            }
+        }
+
+        private void DrawColumnMenuWindow(int windowID)
+        {
+            DrawColumnMenu(new Rect(0, 20, columnMenuRect.width, columnMenuRect.height - 20));
+            GUI.DragWindow(new Rect(0, 0, columnMenuRect.width, 20));
         }
 
         private void EditorLock()
@@ -1723,6 +1778,7 @@ namespace RealFuels
                     GetBoolSymbol(row.Node, "pressureFed"),
                     GetRatedBurnTimeString(row.Node),
                     GetTestedBurnTimeString(row.Node), // NEW: Tested burn time column
+                    GetFlightDataString(), // NEW: Data (du) column
                     GetIgnitionReliabilityStartString(row.Node),
                     GetIgnitionReliabilityEndString(row.Node),
                     GetCycleReliabilityStartString(row.Node),
@@ -1744,13 +1800,14 @@ namespace RealFuels
             }
 
             // Action column needs fixed width for two buttons
-            ConfigColumnWidths[17] = 160f;
+            ConfigColumnWidths[18] = 160f;
 
             // Set minimum widths for specific columns
             ConfigColumnWidths[7] = Mathf.Max(ConfigColumnWidths[7], 30f); // Ull
             ConfigColumnWidths[8] = Mathf.Max(ConfigColumnWidths[8], 30f); // PFed
             ConfigColumnWidths[9] = Mathf.Max(ConfigColumnWidths[9], 50f); // Rated burn
             ConfigColumnWidths[10] = Mathf.Max(ConfigColumnWidths[10], 50f); // Tested burn
+            ConfigColumnWidths[11] = Mathf.Max(ConfigColumnWidths[11], 80f); // Data (du)
         }
 
         protected void DrawConfigTable(IEnumerable<ConfigRowDefinition> rows)
@@ -1772,7 +1829,8 @@ namespace RealFuels
 
             // Update window width to fit table exactly (accounting for window padding: 5px left + 5px right = 10px)
             float requiredWindowWidth = totalWidth + 10f; // Table width + padding
-            guiWindowRect.width = requiredWindowWidth;
+            const float minWindowWidth = 900f; // Minimum width to prevent squishing
+            guiWindowRect.width = Mathf.Max(requiredWindowWidth, minWindowWidth);
 
             Rect headerRowRect = GUILayoutUtility.GetRect(GUIContent.none, GUI.skin.label, GUILayout.Height(45));
             float headerStartX = headerRowRect.x; // No left margin
@@ -1836,6 +1894,90 @@ namespace RealFuels
             GUILayout.EndScrollView();
         }
 
+        private void DrawColumnMenu(Rect menuRect)
+        {
+            InitializeColumnVisibility();
+
+            // Column names
+            string[] columnNames = {
+                "Name", "Thrust", "Min%", "ISP", "Mass", "Gimbal",
+                "Ignitions", "Ullage", "Press-Fed", "Rated (s)", "Tested (s)", "Data (du)",
+                "Ign No Data", "Ign Max Data", "Burn No Data", "Burn Max Data",
+                "Tech", "Cost", "Actions"
+            };
+
+            float yPos = menuRect.y + 10;
+            float leftX = menuRect.x + 10;
+            float rightX = menuRect.x + menuRect.width / 2 + 5;
+
+            var headerStyle = new GUIStyle(GUI.skin.label)
+            {
+                fontSize = 13,
+                fontStyle = FontStyle.Bold,
+                normal = { textColor = Color.white }
+            };
+
+            var labelStyle = new GUIStyle(GUI.skin.label)
+            {
+                fontSize = 12,
+                normal = { textColor = Color.white }
+            };
+
+            // Title
+            GUI.Label(new Rect(leftX, yPos, menuRect.width - 20, 20), "Column Visibility", headerStyle);
+            yPos += 25;
+
+            // Separator
+            if (Event.current.type == EventType.Repaint)
+            {
+                Texture2D separatorTex = Styles.CreateColorPixel(new Color(0.3f, 0.3f, 0.3f, 0.5f));
+                GUI.DrawTexture(new Rect(leftX, yPos, menuRect.width - 20, 1), separatorTex);
+            }
+            yPos += 10;
+
+            // Headers for Full and Compact
+            GUI.Label(new Rect(leftX + 100, yPos, 60, 20), "Full", headerStyle);
+            GUI.Label(new Rect(leftX + 170, yPos, 60, 20), "Compact", headerStyle);
+            yPos += 25;
+
+            // Scrollable area for columns
+            Rect scrollRect = new Rect(leftX, yPos, menuRect.width - 20, menuRect.height - 80);
+            Rect viewRect = new Rect(0, 0, scrollRect.width - 20, columnNames.Length * 25);
+
+            GUI.BeginGroup(scrollRect);
+            float itemY = 0;
+
+            for (int i = 0; i < columnNames.Length; i++)
+            {
+                // Column name
+                GUI.Label(new Rect(5, itemY, 90, 20), columnNames[i], labelStyle);
+
+                // Full view checkbox
+                bool newFullVisible = GUI.Toggle(new Rect(105, itemY, 20, 20), columnsVisibleFull[i], "");
+                if (newFullVisible != columnsVisibleFull[i])
+                {
+                    columnsVisibleFull[i] = newFullVisible;
+                }
+
+                // Compact view checkbox
+                bool newCompactVisible = GUI.Toggle(new Rect(175, itemY, 20, 20), columnsVisibleCompact[i], "");
+                if (newCompactVisible != columnsVisibleCompact[i])
+                {
+                    columnsVisibleCompact[i] = newCompactVisible;
+                }
+
+                itemY += 25;
+            }
+
+            GUI.EndGroup();
+
+            // Close button
+            if (GUI.Button(new Rect(menuRect.x + menuRect.width - 60, menuRect.y + menuRect.height - 30, 50, 20), "Close"))
+            {
+                showColumnMenu = false;
+            }
+        }
+
         private void DrawHeaderRow(Rect headerRect)
         {
             float currentX = headerRect.x;
@@ -1896,36 +2038,41 @@ namespace RealFuels
             }
             if (IsColumnVisible(11)) {
                 DrawHeaderCell(new Rect(currentX, headerRect.y, ConfigColumnWidths[11], headerRect.height),
-                    "Ign No Data", "Ignition reliability at 0 data");
+                    "Data (du)", "Current flight data from TestFlight");
                 currentX += ConfigColumnWidths[11];
             }
             if (IsColumnVisible(12)) {
                 DrawHeaderCell(new Rect(currentX, headerRect.y, ConfigColumnWidths[12], headerRect.height),
-                    "Ign Max Data", "Ignition reliability at max data");
+                    "Ign No Data", "Ignition reliability at 0 data");
                 currentX += ConfigColumnWidths[12];
             }
             if (IsColumnVisible(13)) {
                 DrawHeaderCell(new Rect(currentX, headerRect.y, ConfigColumnWidths[13], headerRect.height),
-                    "Burn No Data", "Cycle reliability at 0 data");
+                    "Ign Max Data", "Ignition reliability at max data");
                 currentX += ConfigColumnWidths[13];
             }
             if (IsColumnVisible(14)) {
                 DrawHeaderCell(new Rect(currentX, headerRect.y, ConfigColumnWidths[14], headerRect.height),
-                    "Burn Max Data", "Cycle reliability at max data");
+                    "Burn No Data", "Cycle reliability at 0 data");
                 currentX += ConfigColumnWidths[14];
             }
             if (IsColumnVisible(15)) {
                 DrawHeaderCell(new Rect(currentX, headerRect.y, ConfigColumnWidths[15], headerRect.height),
-                    Localizer.GetStringByTag("#RF_Engine_Requires"), "Required technology");
+                    "Burn Max Data", "Cycle reliability at max data");
                 currentX += ConfigColumnWidths[15];
             }
             if (IsColumnVisible(16)) {
                 DrawHeaderCell(new Rect(currentX, headerRect.y, ConfigColumnWidths[16], headerRect.height),
-                    "Extra Cost", "Extra cost for this config");
+                    Localizer.GetStringByTag("#RF_Engine_Requires"), "Required technology");
                 currentX += ConfigColumnWidths[16];
             }
             if (IsColumnVisible(17)) {
                 DrawHeaderCell(new Rect(currentX, headerRect.y, ConfigColumnWidths[17], headerRect.height),
+                    "Extra Cost", "Extra cost for this config");
+                currentX += ConfigColumnWidths[17];
+            }
+            if (IsColumnVisible(18)) {
+                DrawHeaderCell(new Rect(currentX, headerRect.y, ConfigColumnWidths[18], headerRect.height),
                     "", "Switch and purchase actions"); // No label, just tooltip
             }
         }
@@ -2044,37 +2191,42 @@ namespace RealFuels
             }
 
             if (IsColumnVisible(11)) {
-                GUI.Label(new Rect(currentX, rowRect.y, ConfigColumnWidths[11], rowRect.height), GetIgnitionReliabilityStartString(row.Node), secondaryStyle);
+                GUI.Label(new Rect(currentX, rowRect.y, ConfigColumnWidths[11], rowRect.height), GetFlightDataString(), secondaryStyle);
                 currentX += ConfigColumnWidths[11];
             }
 
             if (IsColumnVisible(12)) {
-                GUI.Label(new Rect(currentX, rowRect.y, ConfigColumnWidths[12], rowRect.height), GetIgnitionReliabilityEndString(row.Node), secondaryStyle);
+                GUI.Label(new Rect(currentX, rowRect.y, ConfigColumnWidths[12], rowRect.height), GetIgnitionReliabilityStartString(row.Node), secondaryStyle);
                 currentX += ConfigColumnWidths[12];
             }
 
             if (IsColumnVisible(13)) {
-                GUI.Label(new Rect(currentX, rowRect.y, ConfigColumnWidths[13], rowRect.height), GetCycleReliabilityStartString(row.Node), secondaryStyle);
+                GUI.Label(new Rect(currentX, rowRect.y, ConfigColumnWidths[13], rowRect.height), GetIgnitionReliabilityEndString(row.Node), secondaryStyle);
                 currentX += ConfigColumnWidths[13];
             }
 
             if (IsColumnVisible(14)) {
-                GUI.Label(new Rect(currentX, rowRect.y, ConfigColumnWidths[14], rowRect.height), GetCycleReliabilityEndString(row.Node), secondaryStyle);
+                GUI.Label(new Rect(currentX, rowRect.y, ConfigColumnWidths[14], rowRect.height), GetCycleReliabilityStartString(row.Node), secondaryStyle);
                 currentX += ConfigColumnWidths[14];
             }
 
             if (IsColumnVisible(15)) {
-                GUI.Label(new Rect(currentX, rowRect.y, ConfigColumnWidths[15], rowRect.height), GetTechString(row.Node), secondaryStyle);
+                GUI.Label(new Rect(currentX, rowRect.y, ConfigColumnWidths[15], rowRect.height), GetCycleReliabilityEndString(row.Node), secondaryStyle);
                 currentX += ConfigColumnWidths[15];
             }
 
             if (IsColumnVisible(16)) {
-                GUI.Label(new Rect(currentX, rowRect.y, ConfigColumnWidths[16], rowRect.height), GetCostDeltaString(row.Node), secondaryStyle);
+                GUI.Label(new Rect(currentX, rowRect.y, ConfigColumnWidths[16], rowRect.height), GetTechString(row.Node), secondaryStyle);
                 currentX += ConfigColumnWidths[16];
             }
 
             if (IsColumnVisible(17)) {
-                DrawActionCell(new Rect(currentX, rowRect.y + 1, ConfigColumnWidths[17], rowRect.height - 2), row.Node, row.IsSelected, row.Apply);
+                GUI.Label(new Rect(currentX, rowRect.y, ConfigColumnWidths[17], rowRect.height), GetCostDeltaString(row.Node), secondaryStyle);
+                currentX += ConfigColumnWidths[17];
+            }
+
+            if (IsColumnVisible(18)) {
+                DrawActionCell(new Rect(currentX, rowRect.y + 1, ConfigColumnWidths[18], rowRect.height - 2), row.Node, row.IsSelected, row.Apply);
             }
         }
 
@@ -2279,15 +2431,35 @@ namespace RealFuels
             return isTrue ? "<color=#FFA726>✓</color>" : "<color=#9E9E9E>✗</color>"; // Orange for restriction, gray for no restriction
         }
 
+        private void InitializeColumnVisibility()
+        {
+            if (columnVisibilityInitialized)
+                return;
+
+            // Initialize full view: all columns visible by default
+            for (int i = 0; i < 19; i++)
+                columnsVisibleFull[i] = true;
+
+            // Initialize compact view: only essential columns
+            for (int i = 0; i < 19; i++)
+                columnsVisibleCompact[i] = false;
+
+            // Essential columns for compact view
+            int[] compactColumns = { 0, 1, 3, 4, 6, 9, 10, 11, 16, 17, 18 }; // 11 is Flight Data (moved after Tested)
+            foreach (int col in compactColumns)
+                columnsVisibleCompact[col] = true;
+
+            columnVisibilityInitialized = true;
+        }
+
         private bool IsColumnVisible(int columnIndex)
         {
-            if (!compactView)
-                return true; // All columns visible in full view
+            InitializeColumnVisibility();
 
-            // Compact view: show only essential columns
-            // 0: Name, 1: Thrust, 3: ISP, 4: Mass, 6: Ignitions, 9: Rated Burn, 10: Tested Burn, 15: Tech, 16: Cost, 17: Actions
-            return columnIndex == 0 || columnIndex == 1 || columnIndex == 3 || columnIndex == 4 ||
-                   columnIndex == 6 || columnIndex == 9 || columnIndex == 10 || columnIndex == 15 || columnIndex == 16 || columnIndex == 17;
+            if (columnIndex < 0 || columnIndex >= 19)
+                return false;
+
+            return compactView ? columnsVisibleCompact[columnIndex] : columnsVisibleFull[columnIndex];
         }
 
         private string GetRatedBurnTimeString(ConfigNode node)
@@ -2361,6 +2533,18 @@ namespace RealFuels
             if (float.TryParse(node.GetValue("cycleReliabilityEnd"), out float val))
                 return $"{val:P1}";
             return "-";
+        }
+
+        private string GetFlightDataString()
+        {
+            // Get current flight data from TestFlight
+            float currentData = TestFlightWrapper.GetCurrentFlightData(part);
+            float maxData = TestFlightWrapper.GetMaximumData(part);
+
+            if (currentData < 0f || maxData <= 0f)
+                return "-";
+
+            return $"{currentData:F0} / {maxData:F0}";
         }
 
         private string GetTechString(ConfigNode node)
@@ -2720,6 +2904,59 @@ namespace RealFuels
             }
         }
 
+        /// <summary>
+        /// Creates a TestFlight-style non-linear reliability curve that maps data units to reliability.
+        /// Uses the same formula as TestFlight_Generic_Engines.cfg with default parameters:
+        /// - reliabilityMidV = 0.75 (achieve 75% of improvement at the kink)
+        /// - reliabilityMidH = 0.4 (kink occurs at 30% of max data, i.e., 3000 du)
+        /// - reliabilityMidTangentWeight = 0.5
+        /// The curve has 3 keys: (0, start), (3000, interpolated), (10000, end)
+        /// </summary>
+        private FloatCurve CreateReliabilityCurve(float reliabilityStart, float reliabilityEnd)
+        {
+            FloatCurve curve = new FloatCurve();
+
+            // TestFlight works with failure chance, not reliability
+            float failChanceStart = 1f - reliabilityStart;
+            float failChanceEnd = 1f - reliabilityEnd;
+
+            // Default TestFlight parameters
+            const float reliabilityMidV = 0.75f;        // 75% of improvement at kink
+            const float reliabilityMidH = 0.4f;         // Kink at 40% through the range
+            const float reliabilityMidTangentWeight = 0.5f;
+            const float maxData = 10000f;
+
+            // Key 0: (0 du, failChanceStart)
+            curve.Add(0f, failChanceStart);
+
+            // Key 1: The "kink" point where you've achieved 75% of the reliability improvement
+            float key1X = reliabilityMidH * 5000f + 1000f; // = 3000 du
+            float key1Y = failChanceStart + reliabilityMidV * (failChanceEnd - failChanceStart);
+
+            // Calculate tangent at key 1 (weighted average of two tangents)
+            float tangentPart1 = (failChanceEnd - failChanceStart) * 0.0001f * reliabilityMidTangentWeight;
+            float linearTangent = (failChanceEnd - key1Y) / (maxData - key1X);
+            float tangentPart2 = linearTangent * (1f - reliabilityMidTangentWeight);
+            float key1Tangent = tangentPart1 + tangentPart2;
+
+            curve.Add(key1X, key1Y, key1Tangent, key1Tangent);
+
+            // Key 2: (10000 du, failChanceEnd) with flat tangent
+            curve.Add(maxData, failChanceEnd, 0f, 0f);
+
+            return curve;
+        }
+
+        /// <summary>
+        /// Evaluates reliability at a given data value using TestFlight's non-linear curve.
+        /// </summary>
+        private float EvaluateReliabilityAtData(float dataUnits, float reliabilityStart, float reliabilityEnd)
+        {
+            FloatCurve curve = CreateReliabilityCurve(reliabilityStart, reliabilityEnd);
+            float failChance = curve.Evaluate(dataUnits);
+            return 1f - failChance; // Convert back to reliability
+        }
+
         private void DrawFailureProbabilityChart(ConfigNode configNode, float width, float height)
         {
             // Ensure textures are cached to prevent loss on window focus change
@@ -2769,7 +3006,17 @@ namespace RealFuels
 
             // Extend max time to show the full cycle curve beyond where it reaches 100× modifier
             // The cycle curve reaches maximum at 2.5× (rated or tested), extend to 3.5× to see asymptotic behavior
-            float maxTime = hasTestedBurnTime ? testedBurnTime * 3.5f : ratedBurnTime * 3.5f;
+            autoMaxTime = hasTestedBurnTime ? testedBurnTime * 3.5f : ratedBurnTime * 3.5f;
+
+            // Use custom max time if enabled, otherwise use auto-calculated
+            float maxTime = useCustomAxisLimits ? customMaxTime : autoMaxTime;
+
+            // Initialize custom values if first time or reset
+            if (!useCustomAxisLimits || customMaxTime == 0f)
+            {
+                customMaxTime = autoMaxTime;
+                maxTimeInput = $"{customMaxTime:F0}";
+            }
 
             Rect chartRect = new Rect(containerRect.x, containerRect.y, chartWidth, height);
             Rect plotArea = new Rect(chartRect.x + padding, chartRect.y + padding, plotWidth, plotHeight);
@@ -2851,17 +3098,23 @@ namespace RealFuels
             }
 
             // Get current TestFlight data (or use simulated value)
-            float realDataPercentage = TestFlightWrapper.GetDataPercentage(part);
-            float dataPercentage = useSimulatedData ? simulatedDataPercentage : realDataPercentage;
-            bool hasCurrentData = (useSimulatedData && simulatedDataPercentage >= 0f) || (dataPercentage >= 0f && dataPercentage <= 1f);
+            float realCurrentData = TestFlightWrapper.GetCurrentFlightData(part);
+            float realMaxData = TestFlightWrapper.GetMaximumData(part);
+            float realDataPercentage = (realMaxData > 0f) ? (realCurrentData / realMaxData) : -1f;
+
+            // Calculate data percentage from simulated or real values
+            float currentDataValue = useSimulatedData ? simulatedDataValue : realCurrentData;
+            float maxDataValue = realMaxData > 0f ? realMaxData : 10000f; // Default to 10000 if no TestFlight data
+            float dataPercentage = (maxDataValue > 0f) ? Mathf.Clamp01(currentDataValue / maxDataValue) : 0f;
+            bool hasCurrentData = (useSimulatedData && currentDataValue >= 0f) || (realCurrentData >= 0f && realMaxData > 0f);
             float[] failureProbsCurrent = null;
             float cycleReliabilityCurrent = 0f;
             float baseRateCurrent = 0f;
 
             if (hasCurrentData)
             {
-                // Interpolate current reliability between start and end based on data percentage
-                cycleReliabilityCurrent = Mathf.Lerp(cycleReliabilityStart, cycleReliabilityEnd, dataPercentage);
+                // Use TestFlight's non-linear reliability curve to get current reliability
+                cycleReliabilityCurrent = EvaluateReliabilityAtData(currentDataValue, cycleReliabilityStart, cycleReliabilityEnd);
                 baseRateCurrent = -Mathf.Log(cycleReliabilityCurrent) / ratedBurnTime;
                 failureProbsCurrent = new float[curvePoints];
 
@@ -2918,9 +3171,19 @@ namespace RealFuels
             float yAxisMaxRaw = Mathf.Min(1f, maxFailureProb + 0.02f);
 
             // Round up to a "nice" number for clean axis labels
-            float yAxisMax = RoundToNiceNumber(yAxisMaxRaw, true);
+            autoMaxFailProb = RoundToNiceNumber(yAxisMaxRaw, true);
             // Ensure minimum range for readability
-            if (yAxisMax < 0.05f) yAxisMax = 0.05f;
+            if (autoMaxFailProb < 0.05f) autoMaxFailProb = 0.05f;
+
+            // Use custom max failure prob if enabled, otherwise use auto-calculated
+            float yAxisMax = useCustomAxisLimits ? customMaxFailProb : autoMaxFailProb;
+
+            // Initialize custom values if first time or reset
+            if (!useCustomAxisLimits || customMaxFailProb == 0f)
+            {
+                customMaxFailProb = autoMaxFailProb;
+                maxFailProbInput = $"{(customMaxFailProb * 100f):F1}";
+            }
 
             // Draw grid lines and labels with dynamic scale
             var labelStyle = new GUIStyle(GUI.skin.label) { fontSize = 13, normal = { textColor = Color.grey } };
@@ -3207,7 +3470,7 @@ namespace RealFuels
                 bool near100xMarker = Mathf.Abs(mousePos.x - max100xX) < 8f;
 
                 string tooltipText = "";
-                string valueColor = "#88DDFF"; // Light cyan for values
+                string valueColor = "#E6D68A"; // Muted yellow for time values and numeric values
 
                 if (nearStartupMarker)
                 {
@@ -3296,12 +3559,37 @@ namespace RealFuels
                     string blueColor = "#7DD9FF";   // Match lighter blue line (current data)
                     string greenColor = "#4DE64D";  // Match green line (max data)
 
+                    // Calculate failure and survival percentages
+                    float mouseFailStartPercent = mouseFailStart * 100f;
+                    float mouseFailEndPercent = mouseFailEnd * 100f;
+                    float mouseFailCurrentPercent = hasCurrentData ? mouseFailCurrent * 100f : 0f;
+
+                    float mouseSurviveStart = (1f - mouseFailStart) * 100f;
+                    float mouseSurviveEnd = (1f - mouseFailEnd) * 100f;
+                    float mouseSurviveCurrent = hasCurrentData ? (1f - mouseFailCurrent) * 100f : 0f;
+
                     tooltipText = $"<b><color={zoneColor}>{zoneName}</color></b>\n\n";
-                    tooltipText += $"At <color={valueColor}>{timeStr}</color>, this engine has a:\n\n";
-                    tooltipText += $"  <color={orangeColor}>{mouseFailStart * 100f:F2}%</color> chance to fail (0 data)\n";
+
+                    // Format failure percentages in X%/X%/X% format
                     if (hasCurrentData)
-                        tooltipText += $"  <color={blueColor}>{mouseFailCurrent * 100f:F2}%</color> chance to fail (current data)\n";
-                    tooltipText += $"  <color={greenColor}>{mouseFailEnd * 100f:F2}%</color> chance to fail (max data)\n\n";
+                    {
+                        tooltipText += $"Failure chance: <color={orangeColor}>{mouseFailStartPercent:F2}%</color> / <color={blueColor}>{mouseFailCurrentPercent:F2}%</color> / <color={greenColor}>{mouseFailEndPercent:F2}%</color>\n";
+                    }
+                    else
+                    {
+                        tooltipText += $"Failure chance: <color={orangeColor}>{mouseFailStartPercent:F2}%</color> / <color={greenColor}>{mouseFailEndPercent:F2}%</color>\n";
+                    }
+
+                    // Format survival percentages in X%/X%/X% format
+                    if (hasCurrentData)
+                    {
+                        tooltipText += $"This engine has a <color={orangeColor}>{mouseSurviveStart:F1}%</color> / <color={blueColor}>{mouseSurviveCurrent:F1}%</color> / <color={greenColor}>{mouseSurviveEnd:F1}%</color> chance to survive to <color={valueColor}>{timeStr}</color>\n\n";
+                    }
+                    else
+                    {
+                        tooltipText += $"This engine has a <color={orangeColor}>{mouseSurviveStart:F1}%</color> / <color={greenColor}>{mouseSurviveEnd:F1}%</color> chance to survive to <color={valueColor}>{timeStr}</color>\n\n";
+                    }
+
                     tooltipText += $"Cycle modifier: <color={valueColor}>{cycleModifier:F2}×</color>";
                 }
 
@@ -3315,12 +3603,13 @@ namespace RealFuels
                 configNode.TryGetValue("ignitionReliabilityStart", ref ignitionReliabilityStart);
                 configNode.TryGetValue("ignitionReliabilityEnd", ref ignitionReliabilityEnd);
 
-                // Calculate current ignition reliability
-                float ignitionReliabilityCurrent = hasCurrentData ? Mathf.Lerp(ignitionReliabilityStart, ignitionReliabilityEnd, dataPercentage) : 0f;
+                // Calculate current ignition reliability using TestFlight's non-linear curve
+                float ignitionReliabilityCurrent = hasCurrentData ? EvaluateReliabilityAtData(currentDataValue, ignitionReliabilityStart, ignitionReliabilityEnd) : 0f;
 
                 DrawFailureInfoPanel(infoRect, ratedBurnTime, testedBurnTime, hasTestedBurnTime,
                     cycleReliabilityStart, cycleReliabilityEnd, ignitionReliabilityStart, ignitionReliabilityEnd,
-                    hasCurrentData, cycleReliabilityCurrent, ignitionReliabilityCurrent, dataPercentage, realDataPercentage);
+                    hasCurrentData, cycleReliabilityCurrent, ignitionReliabilityCurrent, dataPercentage,
+                    currentDataValue, maxDataValue, realCurrentData, realMaxData);
 
                 // Draw tooltip last so it appears on top of everything
                 DrawChartTooltip(finalMousePos, finalTooltipText);
@@ -3333,18 +3622,20 @@ namespace RealFuels
                 configNode.TryGetValue("ignitionReliabilityStart", ref ignitionReliabilityStart);
                 configNode.TryGetValue("ignitionReliabilityEnd", ref ignitionReliabilityEnd);
 
-                // Calculate current ignition reliability
-                float ignitionReliabilityCurrent = hasCurrentData ? Mathf.Lerp(ignitionReliabilityStart, ignitionReliabilityEnd, dataPercentage) : 0f;
+                // Calculate current ignition reliability using TestFlight's non-linear curve
+                float ignitionReliabilityCurrent = hasCurrentData ? EvaluateReliabilityAtData(currentDataValue, ignitionReliabilityStart, ignitionReliabilityEnd) : 0f;
 
                 DrawFailureInfoPanel(infoRect, ratedBurnTime, testedBurnTime, hasTestedBurnTime,
                     cycleReliabilityStart, cycleReliabilityEnd, ignitionReliabilityStart, ignitionReliabilityEnd,
-                    hasCurrentData, cycleReliabilityCurrent, ignitionReliabilityCurrent, dataPercentage, realDataPercentage);
+                    hasCurrentData, cycleReliabilityCurrent, ignitionReliabilityCurrent, dataPercentage,
+                    currentDataValue, maxDataValue, realCurrentData, realMaxData);
             }
         }
 
         private void DrawFailureInfoPanel(Rect rect, float ratedBurnTime, float testedBurnTime, bool hasTestedBurnTime,
             float cycleReliabilityStart, float cycleReliabilityEnd, float ignitionReliabilityStart, float ignitionReliabilityEnd,
-            bool hasCurrentData, float cycleReliabilityCurrent, float ignitionReliabilityCurrent, float dataPercentage, float realDataPercentage)
+            bool hasCurrentData, float cycleReliabilityCurrent, float ignitionReliabilityCurrent, float dataPercentage,
+            float currentDataValue, float maxDataValue, float realCurrentData, float realMaxData)
         {
             // Draw background
             if (Event.current.type == EventType.Repaint)
@@ -3406,7 +3697,7 @@ namespace RealFuels
             // Style for rich text labels
             var textStyle = new GUIStyle(GUI.skin.label)
             {
-                fontSize = 13,
+                fontSize = 15,
                 normal = { textColor = Color.white },
                 wordWrap = true,
                 richText = true,
@@ -3415,7 +3706,7 @@ namespace RealFuels
 
             var headerStyle = new GUIStyle(GUI.skin.label)
             {
-                fontSize = 15,
+                fontSize = 17,
                 fontStyle = FontStyle.Bold,
                 normal = { textColor = new Color(0.9f, 0.9f, 0.9f) },
                 wordWrap = true,
@@ -3425,7 +3716,7 @@ namespace RealFuels
 
             var sectionStyle = new GUIStyle(GUI.skin.label)
             {
-                fontSize = 14,
+                fontSize = 16,
                 fontStyle = FontStyle.Bold,
                 normal = { textColor = new Color(1f, 0.5f, 0.2f) }, // Orange for 0 data
                 wordWrap = true,
@@ -3437,186 +3728,253 @@ namespace RealFuels
             string orangeColor = "#FF8033"; // 0 data
             string blueColor = "#7DD9FF";   // Current data (lighter blue)
             string greenColor = "#4DE64D";  // Max data
-            string valueColor = "#88DDFF";  // Time values
+            string valueColor = "#E6D68A";  // Time values - faded yellow
 
             // Start at same vertical position as chart title for alignment
             float yPos = rect.y + 4;
 
-            // Title
-            GUI.Label(new Rect(rect.x, yPos, rect.width, 20), "Engine Reliability:", headerStyle);
-            yPos += 24;
-
-            // === 0 DATA SECTION (Orange) ===
-            sectionStyle.normal.textColor = new Color(1f, 0.5f, 0.2f);
-            GUI.Label(new Rect(rect.x, yPos, rect.width, 18), "At 0 Data:", sectionStyle);
-            yPos += 20;
-
-            // Build narrative text for 0 data
-            string engineText = clusterSize > 1 ? $"A cluster of <color={valueColor}>{clusterSize}</color> engines" : "This engine";
-            string text0Data = $"{engineText} has a <color={orangeColor}>{ignitionSuccessStart:F1}%</color> chance for all to ignite, ";
-            text0Data += $"then a <color={orangeColor}>{ratedSuccessStart:F1}%</color> chance for all to burn for <color={valueColor}>{ratedBurnTime:F0}s</color> (rated)";
-            if (hasTestedBurnTime)
-                text0Data += $", and a <color={orangeColor}>{testedSuccessStart:F1}%</color> chance for all to burn to <color={valueColor}>{testedBurnTime:F0}s</color> (tested)";
-            text0Data += ".";
-
-            float height0 = textStyle.CalcHeight(new GUIContent(text0Data), rect.width);
-            GUI.Label(new Rect(rect.x, yPos, rect.width, height0), text0Data, textStyle);
-            yPos += height0 + 8;
-
-            // === CURRENT DATA SECTION (Blue) - only if available ===
+            // === COMBINED RELIABILITY SECTION ===
+            // Color-coded section header
+            string headerText = $"At <color={orangeColor}>Starting</color>";
             if (hasCurrentData)
             {
-                sectionStyle.normal.textColor = new Color(0.49f, 0.85f, 1.0f); // Lighter blue to match line
-                GUI.Label(new Rect(rect.x, yPos, rect.width, 18), $"At Current Data ({dataPercentage * 100f:F0}%):", sectionStyle);
-                yPos += 20;
-
-                // Build narrative text for current data
-                string textCurrentData = $"{engineText} has a <color={blueColor}>{ignitionSuccessCurrent:F1}%</color> chance for all to ignite, ";
-                textCurrentData += $"then a <color={blueColor}>{ratedSuccessCurrent:F1}%</color> chance for all to burn for <color={valueColor}>{ratedBurnTime:F0}s</color> (rated)";
-                if (hasTestedBurnTime)
-                    textCurrentData += $", and a <color={blueColor}>{testedSuccessCurrent:F1}%</color> chance for all to burn to <color={valueColor}>{testedBurnTime:F0}s</color> (tested)";
-                textCurrentData += ".";
-
-                float heightCurrent = textStyle.CalcHeight(new GUIContent(textCurrentData), rect.width);
-                GUI.Label(new Rect(rect.x, yPos, rect.width, heightCurrent), textCurrentData, textStyle);
-                yPos += heightCurrent + 8;
+                string dataLabel = maxDataValue > 0f ? $"{currentDataValue:F0} du" : $"{dataPercentage * 100f:F0}%";
+                headerText += $" / <color={blueColor}>Current ({dataLabel})</color>";
             }
+            headerText += $" / <color={greenColor}>Max</color>:";
 
-            // === MAX DATA SECTION (Green) ===
-            sectionStyle.normal.textColor = new Color(0.3f, 0.9f, 0.3f);
-            GUI.Label(new Rect(rect.x, yPos, rect.width, 18), "At Max Data:", sectionStyle);
+            sectionStyle.normal.textColor = Color.white; // Use white for base, colors come from rich text
+            GUI.Label(new Rect(rect.x, yPos, rect.width, 20), headerText, sectionStyle);
             yPos += 20;
 
-            // Build narrative text for max data
-            string textMaxData = $"{engineText} has a <color={greenColor}>{ignitionSuccessEnd:F1}%</color> chance for all to ignite, ";
-            textMaxData += $"then a <color={greenColor}>{ratedSuccessEnd:F1}%</color> chance for all to burn for <color={valueColor}>{ratedBurnTime:F0}s</color> (rated)";
+            // Build single narrative with all values
+            string engineText = clusterSize > 1 ? $"A cluster of <color={valueColor}>{clusterSize}</color> engines" : "This engine";
+            string forAll = clusterSize > 1 ? " for all" : "";
+            string combinedText = $"{engineText} has a ";
+
+            // Ignition success rates (with larger font for percentages)
+            if (hasCurrentData)
+                combinedText += $"<size=17><color={orangeColor}>{ignitionSuccessStart:F1}%</color></size> / <size=17><color={blueColor}>{ignitionSuccessCurrent:F1}%</color></size> / <size=17><color={greenColor}>{ignitionSuccessEnd:F1}%</color></size>";
+            else
+                combinedText += $"<size=17><color={orangeColor}>{ignitionSuccessStart:F1}%</color></size> / <size=17><color={greenColor}>{ignitionSuccessEnd:F1}%</color></size>";
+
+            combinedText += $" chance{forAll} to ignite, then a ";
+
+            // Rated burn success rates (with larger font for percentages)
+            if (hasCurrentData)
+                combinedText += $"<size=17><color={orangeColor}>{ratedSuccessStart:F1}%</color></size> / <size=17><color={blueColor}>{ratedSuccessCurrent:F1}%</color></size> / <size=17><color={greenColor}>{ratedSuccessEnd:F1}%</color></size>";
+            else
+                combinedText += $"<size=17><color={orangeColor}>{ratedSuccessStart:F1}%</color></size> / <size=17><color={greenColor}>{ratedSuccessEnd:F1}%</color></size>";
+
+            combinedText += $" chance{forAll} to burn for <color={valueColor}>{ratedBurnTime:F0}s</color> (rated)";
+
+            // Tested burn success rates (if applicable, with larger font for percentages)
             if (hasTestedBurnTime)
-                textMaxData += $", and a <color={greenColor}>{testedSuccessEnd:F1}%</color> chance for all to burn to <color={valueColor}>{testedBurnTime:F0}s</color> (tested)";
-            textMaxData += ".";
+            {
+                combinedText += ", and a ";
+                if (hasCurrentData)
+                    combinedText += $"<size=17><color={orangeColor}>{testedSuccessStart:F1}%</color></size> / <size=17><color={blueColor}>{testedSuccessCurrent:F1}%</color></size> / <size=17><color={greenColor}>{testedSuccessEnd:F1}%</color></size>";
+                else
+                    combinedText += $"<size=17><color={orangeColor}>{testedSuccessStart:F1}%</color></size> / <size=17><color={greenColor}>{testedSuccessEnd:F1}%</color></size>";
 
-            float heightMax = textStyle.CalcHeight(new GUIContent(textMaxData), rect.width);
-            GUI.Label(new Rect(rect.x, yPos, rect.width, heightMax), textMaxData, textStyle);
-            yPos += heightMax + 16;
+                combinedText += $" chance{forAll} to burn to <color={valueColor}>{testedBurnTime:F0}s</color> (tested)";
+            }
+            combinedText += ".";
 
-            // === SIMULATION CONTROLS ===
-            bool hasRealData = realDataPercentage >= 0f && realDataPercentage <= 1f;
+            float combinedHeight = textStyle.CalcHeight(new GUIContent(combinedText), rect.width);
+            GUI.Label(new Rect(rect.x, yPos, rect.width, combinedHeight), combinedText, textStyle);
+            yPos += combinedHeight + 12;
+
+            // === SIDE-BY-SIDE LAYOUT: DATA GAINS (LEFT) AND CONTROLS (RIGHT) ===
+            // Separator line across full width
+            if (Event.current.type == EventType.Repaint)
+            {
+                GUI.DrawTexture(new Rect(rect.x + 8, yPos, rect.width - 16, 1), chartSeparatorTex);
+            }
+            yPos += 10;
+
+            // Split the panel into two columns
+            float columnStartY = yPos;
+            float leftColumnWidth = rect.width * 0.5f;
+            float rightColumnWidth = rect.width * 0.5f;
+            float leftColumnX = rect.x;
+            float rightColumnX = rect.x + leftColumnWidth;
+
+            // Track heights of both columns to know where to place bottom separator
+            float leftColumnEndY = columnStartY;
+            float rightColumnEndY = columnStartY;
+
+            // === LEFT COLUMN: DATA GAINS ===
+            float leftYPos = columnStartY;
+            string infoColor = "#FFEE88"; // Light yellow
+            string purpleColor = "#CCB3FF"; // Light purple - matches section header
+
+            // Calculate data collection info
+            float ratedContinuousBurnTime = ratedBurnTime;
+            float dataRate = 640f / ratedContinuousBurnTime;
+            float duPerFlight = dataRate * ratedBurnTime;
+
+            // Section header
+            sectionStyle.normal.textColor = new Color(0.8f, 0.7f, 1.0f); // Light purple/lavender
+            GUI.Label(new Rect(leftColumnX, leftYPos, leftColumnWidth, 20), "How To Gain Data:", sectionStyle);
+            leftYPos += 20;
+
+            // Bullet list
+            var bulletStyle = new GUIStyle(GUI.skin.label)
+            {
+                fontSize = 14,
+                normal = { textColor = Color.white },
+                wordWrap = false,
+                richText = true,
+                padding = new RectOffset(8, 8, 1, 1)
+            };
+
+            float bulletHeight = 18;
+
+            // Full rated burn entry
+            string ratedBurnText = $"• Full rated burn (<color={valueColor}>{ratedBurnTime:F0}s</color>) gains <color={purpleColor}>{duPerFlight:F0}</color> du";
+            GUI.Label(new Rect(leftColumnX, leftYPos, leftColumnWidth, bulletHeight), ratedBurnText, bulletStyle);
+            leftYPos += bulletHeight;
+
+            // Failure types
+            string[] failureTypes = { "Explode", "Shutdown", "Ignition Fail", "Perf. Loss", "Reduced Thrust" };
+            int[] failureDu = { 1300, 1100, 1050, 800, 700 };
+
+            for (int i = 0; i < failureTypes.Length; i++)
+            {
+                string bulletText = $"• {failureTypes[i]} gains <color={purpleColor}>{failureDu[i]}</color> du";
+                GUI.Label(new Rect(leftColumnX, leftYPos, leftColumnWidth, bulletHeight), bulletText, bulletStyle);
+                leftYPos += bulletHeight;
+            }
+
+            leftColumnEndY = leftYPos + 8;
+
+            // === RIGHT COLUMN: SIMULATION CONTROLS ===
+            float rightYPos = columnStartY;
+            bool hasRealData = realCurrentData >= 0f && realMaxData > 0f;
 
             var controlStyle = new GUIStyle(GUI.skin.label)
             {
                 fontSize = 12,
+                fontStyle = FontStyle.Bold,
                 normal = { textColor = new Color(0.8f, 0.8f, 0.8f) },
                 padding = new RectOffset(8, 8, 2, 2)
             };
 
             var sliderStyle = GUI.skin.horizontalSlider;
             var thumbStyle = GUI.skin.horizontalSliderThumb;
-            var buttonStyle = new GUIStyle(GUI.skin.button) { fontSize = 11 };
-            var inputStyle = new GUIStyle(GUI.skin.textField) { fontSize = 11, alignment = TextAnchor.MiddleCenter };
+            var buttonStyle = new GUIStyle(GUI.skin.button) { fontSize = 12, fontStyle = FontStyle.Bold };
+            var inputStyle = new GUIStyle(GUI.skin.textField) { fontSize = 12, fontStyle = FontStyle.Bold, alignment = TextAnchor.MiddleCenter };
 
-            // Separator line
-            if (Event.current.type == EventType.Repaint)
-            {
-                GUI.DrawTexture(new Rect(rect.x + 8, yPos, rect.width - 16, 1), chartSeparatorTex);
-            }
-            yPos += 6;
-
-            // === BUTTONS ROW: Log X, Log Y, Reset (3 side by side) ===
-            float btnWidth = (rect.width - 24) / 3f;
+            // Buttons row - all horizontal
+            float logBtnWidth = 60f;
             float btnSpacing = 4f;
+            float resetBtnWidth = rightColumnWidth - 24 - (logBtnWidth * 2) - (btnSpacing * 2);
+
+            var boldButtonStyle = new GUIStyle(buttonStyle) { fontStyle = FontStyle.Bold };
 
             // X-axis log scale toggle
             string toggleLabelX = useLogScaleX ? "X: Lin" : "X: Log";
-            if (GUI.Button(new Rect(rect.x + 8, yPos, btnWidth, 20), toggleLabelX, buttonStyle))
+            if (GUI.Button(new Rect(rightColumnX + 8, rightYPos, logBtnWidth, 20), toggleLabelX, boldButtonStyle))
             {
                 useLogScaleX = !useLogScaleX;
             }
 
             // Y-axis log scale toggle
             string toggleLabelY = useLogScaleY ? "Y: Lin" : "Y: Log";
-            if (GUI.Button(new Rect(rect.x + 8 + btnWidth + btnSpacing, yPos, btnWidth, 20), toggleLabelY, buttonStyle))
+            if (GUI.Button(new Rect(rightColumnX + 8 + logBtnWidth + btnSpacing, rightYPos, logBtnWidth, 20), toggleLabelY, boldButtonStyle))
             {
                 useLogScaleY = !useLogScaleY;
             }
 
             // Reset button
-            string resetButtonText = hasRealData ? $"{realDataPercentage * 100f:F0}%" : "0%";
-            if (GUI.Button(new Rect(rect.x + 8 + (btnWidth + btnSpacing) * 2, yPos, btnWidth, 20), resetButtonText, buttonStyle))
+            string resetButtonText = "Reset All";
+            if (GUI.Button(new Rect(rightColumnX + 8 + (logBtnWidth + btnSpacing) * 2, rightYPos, resetBtnWidth, 20), resetButtonText, buttonStyle))
             {
+                // Reset data value
                 if (hasRealData)
                 {
-                    simulatedDataPercentage = realDataPercentage;
-                    dataPercentageInput = $"{realDataPercentage * 100f:F0}";
+                    simulatedDataValue = realCurrentData;
+                    dataValueInput = $"{realCurrentData:F0}";
                     useSimulatedData = false;
                 }
                 else
                 {
-                    simulatedDataPercentage = 0f;
-                    dataPercentageInput = "0";
+                    simulatedDataValue = 0f;
+                    dataValueInput = "0";
                     useSimulatedData = true;
                 }
+
+                // Reset cluster
                 clusterSize = 1;
                 clusterSizeInput = "1";
+
+                // Reset axis limits to auto
+                useCustomAxisLimits = false;
+                customMaxTime = autoMaxTime;
+                customMaxFailProb = autoMaxFailProb;
+                maxTimeInput = $"{customMaxTime:F0}";
+                maxFailProbInput = $"{(customMaxFailProb * 100f):F1}";
             }
+            rightYPos += 24;
 
-            yPos += 26;
+            // Define width for slider controls
+            float btnWidth = rightColumnWidth - 16;
 
-            // === TWO SLIDERS SIDE BY SIDE ===
-            float halfWidth = (rect.width - 24) / 2f;
-            float leftX = rect.x;
-            float rightX = rect.x + halfWidth + 8;
-
-            // LEFT: DATA PERCENTAGE
-            GUI.Label(new Rect(leftX, yPos, halfWidth, 16), "Data %", controlStyle);
-            GUI.Label(new Rect(rightX, yPos, halfWidth, 16), "Cluster", controlStyle);
-            yPos += 16;
+            // Data slider
+            GUI.Label(new Rect(rightColumnX + 8, rightYPos, btnWidth, 16), "Data (du)", controlStyle);
+            rightYPos += 16;
 
             // Initialize simulated value to real data if not yet simulating
             if (!useSimulatedData)
             {
-                simulatedDataPercentage = hasRealData ? realDataPercentage : 0f;
-                dataPercentageInput = $"{simulatedDataPercentage * 100f:F0}";
+                simulatedDataValue = hasRealData ? realCurrentData : 0f;
+                dataValueInput = $"{simulatedDataValue:F0}";
             }
 
-            // Data % slider
-            simulatedDataPercentage = GUI.HorizontalSlider(new Rect(leftX + 8, yPos, halfWidth - 60, 16),
-                simulatedDataPercentage * 100f, 0f, 100f, sliderStyle, thumbStyle) / 100f;
+            // Data slider
+            simulatedDataValue = GUI.HorizontalSlider(new Rect(rightColumnX + 8, rightYPos, btnWidth - 50, 16),
+                simulatedDataValue, 0f, maxDataValue, sliderStyle, thumbStyle);
 
             // Mark as simulated if user moved slider away from real data
-            if (hasRealData && Mathf.Abs(simulatedDataPercentage - realDataPercentage) > 0.001f)
+            if (hasRealData && Mathf.Abs(simulatedDataValue - realCurrentData) > 0.1f)
             {
                 useSimulatedData = true;
             }
-            else if (!hasRealData && simulatedDataPercentage > 0.001f)
+            else if (!hasRealData && simulatedDataValue > 0.1f)
             {
                 useSimulatedData = true;
             }
 
-            // Data % input field
-            dataPercentageInput = $"{simulatedDataPercentage * 100f:F0}";
-            GUI.SetNextControlName("dataPercentInput");
-            string newDataInput = GUI.TextField(new Rect(leftX + halfWidth - 45, yPos - 2, 40, 20),
-                dataPercentageInput, 5, inputStyle);
+            // Data input field
+            dataValueInput = $"{simulatedDataValue:F0}";
+            GUI.SetNextControlName("dataValueInput");
+            string newDataInput = GUI.TextField(new Rect(rightColumnX + btnWidth - 35, rightYPos - 2, 40, 20),
+                dataValueInput, 6, inputStyle);
 
-            if (newDataInput != dataPercentageInput)
+            if (newDataInput != dataValueInput)
             {
-                dataPercentageInput = newDataInput;
-                if (GUI.GetNameOfFocusedControl() == "dataPercentInput" && float.TryParse(dataPercentageInput, out float inputDataPercent))
+                dataValueInput = newDataInput;
+                if (GUI.GetNameOfFocusedControl() == "dataValueInput" && float.TryParse(dataValueInput, out float inputDataValue))
                 {
-                    inputDataPercent = Mathf.Clamp(inputDataPercent, 0f, 100f);
-                    simulatedDataPercentage = inputDataPercent / 100f;
+                    inputDataValue = Mathf.Clamp(inputDataValue, 0f, maxDataValue);
+                    simulatedDataValue = inputDataValue;
                     useSimulatedData = true;
                 }
             }
+            rightYPos += 24;
 
-            // RIGHT: CLUSTER SIZE
             // Cluster slider
-            clusterSize = Mathf.RoundToInt(GUI.HorizontalSlider(new Rect(rightX + 8, yPos, halfWidth - 60, 16),
-                clusterSize, 1f, 20f, sliderStyle, thumbStyle));
+            GUI.Label(new Rect(rightColumnX + 8, rightYPos, btnWidth, 16), "Cluster", controlStyle);
+            rightYPos += 16;
+
+            clusterSize = Mathf.RoundToInt(GUI.HorizontalSlider(new Rect(rightColumnX + 8, rightYPos, btnWidth - 50, 16),
+                clusterSize, 1f, 100f, sliderStyle, thumbStyle));
 
             // Cluster input field
             clusterSizeInput = clusterSize.ToString();
             GUI.SetNextControlName("clusterSizeInput");
-            string newClusterInput = GUI.TextField(new Rect(rightX + halfWidth - 45, yPos - 2, 40, 20),
+            string newClusterInput = GUI.TextField(new Rect(rightColumnX + btnWidth - 35, rightYPos - 2, 40, 20),
                 clusterSizeInput, 3, inputStyle);
 
             if (newClusterInput != clusterSizeInput)
@@ -3624,11 +3982,75 @@ namespace RealFuels
                 clusterSizeInput = newClusterInput;
                 if (GUI.GetNameOfFocusedControl() == "clusterSizeInput" && int.TryParse(clusterSizeInput, out int inputCluster))
                 {
-                    inputCluster = Mathf.Clamp(inputCluster, 1, 20);
+                    inputCluster = Mathf.Clamp(inputCluster, 1, 100);
                     clusterSize = inputCluster;
                     clusterSizeInput = clusterSize.ToString();
                 }
             }
+            rightYPos += 24;
+
+            // Max Time slider
+            GUI.Label(new Rect(rightColumnX + 8, rightYPos, btnWidth, 16), "Max Time (s)", controlStyle);
+            rightYPos += 16;
+
+            customMaxTime = GUI.HorizontalSlider(new Rect(rightColumnX + 8, rightYPos, btnWidth - 50, 16),
+                customMaxTime, 10f, autoMaxTime * 2f, sliderStyle, thumbStyle);
+
+            if (Mathf.Abs(customMaxTime - autoMaxTime) > 1f)
+                useCustomAxisLimits = true;
+
+            // Max Time input field
+            maxTimeInput = $"{customMaxTime:F0}";
+            GUI.SetNextControlName("maxTimeInput");
+            string newMaxTimeInput = GUI.TextField(new Rect(rightColumnX + btnWidth - 35, rightYPos - 2, 40, 20),
+                maxTimeInput, 6, inputStyle);
+
+            if (newMaxTimeInput != maxTimeInput)
+            {
+                maxTimeInput = newMaxTimeInput;
+                if (GUI.GetNameOfFocusedControl() == "maxTimeInput" && float.TryParse(maxTimeInput, out float inputMaxTime))
+                {
+                    inputMaxTime = Mathf.Clamp(inputMaxTime, 10f, autoMaxTime * 10f);
+                    customMaxTime = inputMaxTime;
+                    useCustomAxisLimits = true;
+                }
+            }
+            rightYPos += 24;
+
+            // Max Fail % slider
+            GUI.Label(new Rect(rightColumnX + 8, rightYPos, btnWidth, 16), "Max Fail %", controlStyle);
+            rightYPos += 16;
+
+            float customMaxFailPercent = customMaxFailProb * 100f;
+            customMaxFailPercent = GUI.HorizontalSlider(new Rect(rightColumnX + 8, rightYPos, btnWidth - 50, 16),
+                customMaxFailPercent, 1f, 100f, sliderStyle, thumbStyle);
+            customMaxFailProb = customMaxFailPercent / 100f;
+
+            if (Mathf.Abs(customMaxFailProb - autoMaxFailProb) > 0.01f)
+                useCustomAxisLimits = true;
+
+            // Max Fail % input field
+            maxFailProbInput = $"{customMaxFailPercent:F1}";
+            GUI.SetNextControlName("maxFailProbInput");
+            string newMaxFailInput = GUI.TextField(new Rect(rightColumnX + btnWidth - 35, rightYPos - 2, 40, 20),
+                maxFailProbInput, 5, inputStyle);
+
+            if (newMaxFailInput != maxFailProbInput)
+            {
+                maxFailProbInput = newMaxFailInput;
+                if (GUI.GetNameOfFocusedControl() == "maxFailProbInput" && float.TryParse(maxFailProbInput, out float inputMaxFail))
+                {
+                    inputMaxFail = Mathf.Clamp(inputMaxFail, 1f, 200f);
+                    customMaxFailProb = inputMaxFail / 100f;
+                    useCustomAxisLimits = true;
+                }
+            }
+            rightYPos += 24;
+
+            rightColumnEndY = rightYPos;
+
+            // Use the taller column to determine the final height
+            yPos = Mathf.Max(leftColumnEndY, rightColumnEndY) + 8;
         }
 
         private void DrawLine(Vector2 start, Vector2 end, Texture2D texture, float width)
@@ -3816,7 +4238,10 @@ namespace RealFuels
 
         private void EngineManagerGUI(int WindowID)
         {
-            GUILayout.Space(6); // Breathing room at top
+            // Use BeginVertical with GUILayout.ExpandHeight(false) to prevent extra vertical space
+            GUILayout.BeginVertical(GUILayout.ExpandHeight(false));
+
+            GUILayout.Space(4); // Minimal top padding
 
             GUILayout.BeginHorizontal();
             GUILayout.Label(EditorDescription);
@@ -3825,25 +4250,28 @@ namespace RealFuels
             {
                 compactView = !compactView;
             }
+            if (GUILayout.Button("Settings", GUILayout.Width(70)))
+            {
+                showColumnMenu = !showColumnMenu;
+            }
             GUILayout.EndHorizontal();
 
-            GUILayout.Space(6); // Space before table
+            GUILayout.Space(4); // Minimal space before table
             DrawConfigSelectors(FilteredDisplayConfigs(false));
 
             // Draw failure probability chart for current config
-            if (config != null)
+            if (config != null && config.HasValue("cycleReliabilityStart"))
             {
-                GUILayout.Space(8);
+                GUILayout.Space(6);
                 DrawFailureProbabilityChart(config, guiWindowRect.width - 10, 360);
+                GUILayout.Space(6); // Consistent small space after chart
             }
 
             DrawTechLevelSelector();
 
-            // Only use negative space if no chart (chart needs the room)
-            if (config == null || !config.HasValue("cycleReliabilityStart"))
-                GUILayout.Space(-80); // Remove all bottom padding - window ends right at table
-            else
-                GUILayout.Space(8); // Add space after chart
+            GUILayout.Space(4); // Minimal bottom padding
+
+            GUILayout.EndVertical();
 
             if (!myToolTip.Equals(string.Empty) && GUI.tooltip.Equals(string.Empty))
             {
