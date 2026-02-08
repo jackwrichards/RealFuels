@@ -1,6 +1,7 @@
 using System;
 using System.Collections;
 using System.Collections.Generic;
+using System.Globalization;
 using System.Reflection;
 using System.Linq;
 using UnityEngine;
@@ -32,18 +33,18 @@ namespace RealFuels
         public string Info()
         {
             if (new[] { gimbalRange, gimbalRangeXP, gimbalRangeXN, gimbalRangeYP, gimbalRangeYN }.Distinct().Count() == 1)
-                return $"{gimbalRange:N1}d"; // 
+                return $"{gimbalRange:0.#}°";
             if (new[] { gimbalRangeXP, gimbalRangeXN, gimbalRangeYP, gimbalRangeYN }.Distinct().Count() == 1)
-                return $"{gimbalRangeXP:N1}d"; // 
+                return $"{gimbalRangeXP:0.#}°";
             var ret = string.Empty;
             if (gimbalRangeXP == gimbalRangeXN)
-                ret += $"{gimbalRangeXP:N1}d pitch, "; // 
+                ret += $"{gimbalRangeXP:0.#}° pitch, ";
             else
-                ret += $"+{gimbalRangeXP:N1}d/-{gimbalRangeXN:N1}d pitch, "; // 
+                ret += $"+{gimbalRangeXP:0.#}°/-{gimbalRangeXN:0.#}° pitch, ";
             if (gimbalRangeYP == gimbalRangeYN)
-                ret += $"{gimbalRangeYP:N1}d yaw"; // 
+                ret += $"{gimbalRangeYP:0.#}° yaw";
             else
-                ret += $"+{gimbalRangeYP:N1}d/-{gimbalRangeYN:N1}d yaw"; // 
+                ret += $"+{gimbalRangeYP:0.#}°/-{gimbalRangeYN:0.#}° yaw";
             return ret;
         }
     }
@@ -155,7 +156,7 @@ namespace RealFuels
             var name = node.GetValue("name");
             if (!node.HasValue(PatchNameKey))
                  return name;
-            return $"{name} [Subconfig {node.GetValue(PatchNameKey)}]";
+            return node.GetValue(PatchNameKey); // Just show subconfig name without parent prefix
         }
 
         protected override IEnumerable<ConfigRowDefinition> BuildConfigRows()
@@ -603,7 +604,7 @@ namespace RealFuels
 
                 float gimbalR = -1f;
                 if (config.HasValue("gimbalRange"))
-                    gimbalR = float.Parse(config.GetValue("gimbalRange"));
+                    gimbalR = float.Parse(config.GetValue("gimbalRange"), CultureInfo.InvariantCulture);
                 else if (!gimbalTransform.Equals(string.Empty) || useGimbalAnyway)
                 {
                     if (cTL != null)
@@ -652,9 +653,9 @@ namespace RealFuels
                 info.Append($"  {Utilities.FormatThrust(scale * ThrustTL(config.GetValue(thrustRating), config))}");
                 // add throttling info if present
                 if (config.HasValue("minThrust"))
-                    info.Append($", {Localizer.GetStringByTag("#RF_Engine_minThrustInfo")} {float.Parse(config.GetValue("minThrust")) / float.Parse(config.GetValue(thrustRating)):P0}"); //min
+                    info.Append($", {Localizer.GetStringByTag("#RF_Engine_minThrustInfo")} {float.Parse(config.GetValue("minThrust"), CultureInfo.InvariantCulture) / float.Parse(config.GetValue(thrustRating), CultureInfo.InvariantCulture):P0}"); //min
                 else if (config.HasValue("throttle"))
-                    info.Append($", {Localizer.GetStringByTag("#RF_Engine_minThrustInfo")} {float.Parse(config.GetValue("throttle")):P0}"); // min
+                    info.Append($", {Localizer.GetStringByTag("#RF_Engine_minThrustInfo")} {float.Parse(config.GetValue("throttle"), CultureInfo.InvariantCulture):P0}"); // min
             }
             else
                 info.Append($"  {Localizer.GetStringByTag("#RF_Engine_UnknownThrust")}"); // Unknown Thrust
@@ -763,7 +764,7 @@ namespace RealFuels
                 info.Append("\n");
             }
             if (config.HasValue("cost") && float.TryParse(config.GetValue("cost"), out float cst))
-                info.Append($"  ({scale * cst:N0} {Localizer.GetStringByTag("#RF_Engine_extraCost")} )\n"); // extra cost// FIXME should get cost from TL, but this should be safe
+                info.Append($"  ({scale * cst:N0}√ {Localizer.GetStringByTag("#RF_Engine_extraCost")} )\n"); // extra cost// FIXME should get cost from TL, but this should be safe
 
             if (addDescription && config.HasValue("description"))
                 info.Append($"\n  {config.GetValue("description")}\n");
@@ -1154,11 +1155,11 @@ namespace RealFuels
 
             float gimbal = -1f;
             if (cfg.HasValue("gimbalRange"))
-                gimbal = float.Parse(cfg.GetValue("gimbalRange"));
+                gimbal = float.Parse(cfg.GetValue("gimbalRange"), CultureInfo.InvariantCulture);
 
             float cost = 0f;
             if (cfg.HasValue("cost"))
-                cost = scale * float.Parse(cfg.GetValue("cost"));
+                cost = scale * float.Parse(cfg.GetValue("cost"), CultureInfo.InvariantCulture);
 
             if (techLevel != -1)
             {
@@ -1222,7 +1223,7 @@ namespace RealFuels
                 {
                     // allow local override of gimbal mult
                     if (cfg.HasValue("gimbalMult"))
-                        gimbal *= float.Parse(cfg.GetValue("gimbalMult"));
+                        gimbal *= float.Parse(cfg.GetValue("gimbalMult"), CultureInfo.InvariantCulture);
                 }
 
                 // Cost (multiplier will be 1.0 if unspecified)
@@ -1435,15 +1436,49 @@ namespace RealFuels
         private Vector2 configScrollPos = Vector2.zero;
         private GUIContent configGuiContent;
         private bool compactView = false;
+        private bool useLogScaleX = false; // Toggle for logarithmic x-axis on failure chart
+        private bool useLogScaleY = false; // Toggle for logarithmic y-axis on failure chart
+
+        // Simulation controls for data percentage and cluster size
+        private bool useSimulatedData = false; // Whether to override real TestFlight data
+        private float simulatedDataPercentage = 0f; // Simulated data percentage (0-1)
+        private int clusterSize = 1; // Number of engines in cluster (default 1)
+        private string clusterSizeInput = "1"; // Text input for cluster size
+        private string dataPercentageInput = "0"; // Text input for data percentage
 
         private const int ConfigRowHeight = 22;
         private const int ConfigMaxVisibleRows = 16; // Max rows before scrolling (60% taller)
         // Dynamic column widths - calculated based on content
-        private float[] ConfigColumnWidths = new float[17];
+        private float[] ConfigColumnWidths = new float[18];
 
         private static Texture2D rowHoverTex;
         private static Texture2D rowCurrentTex;
         private static Texture2D rowLockedTex;
+        private static Texture2D zebraStripeTex;
+        private static Texture2D columnSeparatorTex;
+
+        // Chart textures - cached to prevent loss on focus change
+        private static Texture2D chartBgTex;
+        private static Texture2D chartGridMajorTex;
+        private static Texture2D chartGridMinorTex;
+        private static Texture2D chartGreenZoneTex;
+        private static Texture2D chartYellowZoneTex;
+        private static Texture2D chartRedZoneTex;
+        private static Texture2D chartDarkRedZoneTex;
+        private static Texture2D chartStartupZoneTex;
+        private static Texture2D chartLineTex;
+        private static Texture2D chartMarkerBlueTex;
+        private static Texture2D chartMarkerGreenTex;
+        private static Texture2D chartMarkerYellowTex;
+        private static Texture2D chartMarkerOrangeTex;
+        private static Texture2D chartMarkerDarkRedTex;
+        private static Texture2D chartSeparatorTex;
+        private static Texture2D chartHoverLineTex;
+        private static Texture2D chartOrangeLineTex;
+        private static Texture2D chartGreenLineTex;
+        private static Texture2D chartBlueLineTex;
+        private static Texture2D chartTooltipBgTex;
+        private static Texture2D infoPanelBgTex;
 
         private int toolTipWidth => EditorLogic.fetch.editorScreen == EditorScreen.Parts ? 220 : 300;
         private int toolTipHeight => (int)Styles.styleEditorTooltip.CalcHeight(new GUIContent(myToolTip), toolTipWidth);
@@ -1512,13 +1547,13 @@ namespace RealFuels
             string costString = string.Empty;
             if (node.HasValue("cost"))
             {
-                float curCost = scale * float.Parse(node.GetValue("cost"));
+                float curCost = scale * float.Parse(node.GetValue("cost"), CultureInfo.InvariantCulture);
 
                 if (techLevel != -1)
                 {
                     curCost = CostTL(curCost, node) - CostTL(0f, node); // get purely the config cost difference
                 }
-                costString = $" ({((curCost < 0) ? string.Empty : "+")}{curCost:N0}f)";
+                costString = $" ({((curCost < 0) ? string.Empty : "+")}{curCost:N0}√)";
             }
             return costString;
         }
@@ -1571,7 +1606,7 @@ namespace RealFuels
                         }
 
                         GUI.enabled = isConfigAvailable;
-                        if (GUILayout.Button(new GUIContent($"{Localizer.GetStringByTag("#RF_Engine_Purchase")} ({upgradeCost:N0}f)", tooltip), GUILayout.Width(145))) // Purchase
+                        if (GUILayout.Button(new GUIContent($"{Localizer.GetStringByTag("#RF_Engine_Purchase")} ({upgradeCost:N0}√)", tooltip), GUILayout.Width(145))) // Purchase
                         {
                             if (EntryCostManager.Instance.PurchaseConfig(nName, node.GetValue("techRequired")))
                                 apply(nName);
@@ -1610,7 +1645,7 @@ namespace RealFuels
                     string techRequired = node.GetValue("techRequired");
                     if (upgradeCost > 0d)
                     {
-                        costString = $" ({upgradeCost:N0}f)";
+                        costString = $" ({upgradeCost:N0}√)";
                         if (GUILayout.Button(new GUIContent($"{Localizer.GetStringByTag("#RF_Engine_Purchase")}  {dispName}{costString}", configInfo))) // Purchase
                         {
                             if (EntryCostManager.Instance.PurchaseConfig(nName, techRequired))
@@ -1673,7 +1708,7 @@ namespace RealFuels
             foreach (var row in rows)
             {
                 string nameText = row.DisplayName;
-                if (row.Indent) nameText = "↳ " + nameText;
+                if (row.Indent) nameText = "    ↳ " + nameText;
 
                 string[] cellValues = new string[]
                 {
@@ -1687,6 +1722,7 @@ namespace RealFuels
                     GetBoolSymbol(row.Node, "ullage"),
                     GetBoolSymbol(row.Node, "pressureFed"),
                     GetRatedBurnTimeString(row.Node),
+                    GetTestedBurnTimeString(row.Node), // NEW: Tested burn time column
                     GetIgnitionReliabilityStartString(row.Node),
                     GetIgnitionReliabilityEndString(row.Node),
                     GetCycleReliabilityStartString(row.Node),
@@ -1708,12 +1744,13 @@ namespace RealFuels
             }
 
             // Action column needs fixed width for two buttons
-            ConfigColumnWidths[16] = 160f;
+            ConfigColumnWidths[17] = 160f;
 
             // Set minimum widths for specific columns
             ConfigColumnWidths[7] = Mathf.Max(ConfigColumnWidths[7], 30f); // Ull
             ConfigColumnWidths[8] = Mathf.Max(ConfigColumnWidths[8], 30f); // PFed
             ConfigColumnWidths[9] = Mathf.Max(ConfigColumnWidths[9], 50f); // Rated burn
+            ConfigColumnWidths[10] = Mathf.Max(ConfigColumnWidths[10], 50f); // Tested burn
         }
 
         protected void DrawConfigTable(IEnumerable<ConfigRowDefinition> rows)
@@ -1767,8 +1804,7 @@ namespace RealFuels
                     // Draw alternating row background first
                     if (!row.IsSelected && !isLocked && !isHovered && rowIndex % 2 == 1)
                     {
-                        Color zebraColor = new Color(0.05f, 0.05f, 0.05f, 0.3f);
-                        GUI.DrawTexture(tableRowRect, Styles.CreateColorPixel(zebraColor));
+                        GUI.DrawTexture(tableRowRect, zebraStripeTex);
                     }
 
                     if (row.IsSelected)
@@ -1855,45 +1891,47 @@ namespace RealFuels
             }
             if (IsColumnVisible(10)) {
                 DrawHeaderCell(new Rect(currentX, headerRect.y, ConfigColumnWidths[10], headerRect.height),
-                    "Ign No Data", "Ignition reliability at 0 data");
+                    "Tested (s)", "Tested burn time (real-world test duration)");
                 currentX += ConfigColumnWidths[10];
             }
             if (IsColumnVisible(11)) {
                 DrawHeaderCell(new Rect(currentX, headerRect.y, ConfigColumnWidths[11], headerRect.height),
-                    "Ign Max Data", "Ignition reliability at max data");
+                    "Ign No Data", "Ignition reliability at 0 data");
                 currentX += ConfigColumnWidths[11];
             }
             if (IsColumnVisible(12)) {
                 DrawHeaderCell(new Rect(currentX, headerRect.y, ConfigColumnWidths[12], headerRect.height),
-                    "Burn No Data", "Cycle reliability at 0 data");
+                    "Ign Max Data", "Ignition reliability at max data");
                 currentX += ConfigColumnWidths[12];
             }
             if (IsColumnVisible(13)) {
                 DrawHeaderCell(new Rect(currentX, headerRect.y, ConfigColumnWidths[13], headerRect.height),
-                    "Burn Max Data", "Cycle reliability at max data");
+                    "Burn No Data", "Cycle reliability at 0 data");
                 currentX += ConfigColumnWidths[13];
             }
             if (IsColumnVisible(14)) {
                 DrawHeaderCell(new Rect(currentX, headerRect.y, ConfigColumnWidths[14], headerRect.height),
-                    Localizer.GetStringByTag("#RF_Engine_Requires"), "Required technology");
+                    "Burn Max Data", "Cycle reliability at max data");
                 currentX += ConfigColumnWidths[14];
             }
             if (IsColumnVisible(15)) {
                 DrawHeaderCell(new Rect(currentX, headerRect.y, ConfigColumnWidths[15], headerRect.height),
-                    "Extra Cost", "Extra cost for this config");
+                    Localizer.GetStringByTag("#RF_Engine_Requires"), "Required technology");
                 currentX += ConfigColumnWidths[15];
             }
             if (IsColumnVisible(16)) {
                 DrawHeaderCell(new Rect(currentX, headerRect.y, ConfigColumnWidths[16], headerRect.height),
+                    "Extra Cost", "Extra cost for this config");
+                currentX += ConfigColumnWidths[16];
+            }
+            if (IsColumnVisible(17)) {
+                DrawHeaderCell(new Rect(currentX, headerRect.y, ConfigColumnWidths[17], headerRect.height),
                     "", "Switch and purchase actions"); // No label, just tooltip
             }
         }
 
         private void DrawColumnSeparators(Rect rowRect)
         {
-            Color separatorColor = new Color(0.25f, 0.25f, 0.25f, 0.9f); // Darker and more opaque
-            Texture2D separatorTex = Styles.CreateColorPixel(separatorColor);
-
             float currentX = rowRect.x;
             for (int i = 0; i < ConfigColumnWidths.Length - 1; i++)
             {
@@ -1901,7 +1939,7 @@ namespace RealFuels
                 {
                     currentX += ConfigColumnWidths[i];
                     Rect separatorRect = new Rect(currentX, rowRect.y, 1, rowRect.height);
-                    GUI.DrawTexture(separatorRect, separatorTex);
+                    GUI.DrawTexture(separatorRect, columnSeparatorTex);
                 }
             }
         }
@@ -1948,7 +1986,7 @@ namespace RealFuels
 
             float currentX = rowRect.x;
             string nameText = row.DisplayName;
-            if (row.Indent) nameText = "↳ " + nameText;
+            if (row.Indent) nameText = "    ↳ " + nameText;
 
             if (IsColumnVisible(0)) {
                 GUI.Label(new Rect(currentX, rowRect.y, ConfigColumnWidths[0], rowRect.height), nameText, primaryStyle);
@@ -2001,37 +2039,42 @@ namespace RealFuels
             }
 
             if (IsColumnVisible(10)) {
-                GUI.Label(new Rect(currentX, rowRect.y, ConfigColumnWidths[10], rowRect.height), GetIgnitionReliabilityStartString(row.Node), secondaryStyle);
+                GUI.Label(new Rect(currentX, rowRect.y, ConfigColumnWidths[10], rowRect.height), GetTestedBurnTimeString(row.Node), secondaryStyle);
                 currentX += ConfigColumnWidths[10];
             }
 
             if (IsColumnVisible(11)) {
-                GUI.Label(new Rect(currentX, rowRect.y, ConfigColumnWidths[11], rowRect.height), GetIgnitionReliabilityEndString(row.Node), secondaryStyle);
+                GUI.Label(new Rect(currentX, rowRect.y, ConfigColumnWidths[11], rowRect.height), GetIgnitionReliabilityStartString(row.Node), secondaryStyle);
                 currentX += ConfigColumnWidths[11];
             }
 
             if (IsColumnVisible(12)) {
-                GUI.Label(new Rect(currentX, rowRect.y, ConfigColumnWidths[12], rowRect.height), GetCycleReliabilityStartString(row.Node), secondaryStyle);
+                GUI.Label(new Rect(currentX, rowRect.y, ConfigColumnWidths[12], rowRect.height), GetIgnitionReliabilityEndString(row.Node), secondaryStyle);
                 currentX += ConfigColumnWidths[12];
             }
 
             if (IsColumnVisible(13)) {
-                GUI.Label(new Rect(currentX, rowRect.y, ConfigColumnWidths[13], rowRect.height), GetCycleReliabilityEndString(row.Node), secondaryStyle);
+                GUI.Label(new Rect(currentX, rowRect.y, ConfigColumnWidths[13], rowRect.height), GetCycleReliabilityStartString(row.Node), secondaryStyle);
                 currentX += ConfigColumnWidths[13];
             }
 
             if (IsColumnVisible(14)) {
-                GUI.Label(new Rect(currentX, rowRect.y, ConfigColumnWidths[14], rowRect.height), GetTechString(row.Node), secondaryStyle);
+                GUI.Label(new Rect(currentX, rowRect.y, ConfigColumnWidths[14], rowRect.height), GetCycleReliabilityEndString(row.Node), secondaryStyle);
                 currentX += ConfigColumnWidths[14];
             }
 
             if (IsColumnVisible(15)) {
-                GUI.Label(new Rect(currentX, rowRect.y, ConfigColumnWidths[15], rowRect.height), GetCostDeltaString(row.Node), secondaryStyle);
+                GUI.Label(new Rect(currentX, rowRect.y, ConfigColumnWidths[15], rowRect.height), GetTechString(row.Node), secondaryStyle);
                 currentX += ConfigColumnWidths[15];
             }
 
             if (IsColumnVisible(16)) {
-                DrawActionCell(new Rect(currentX, rowRect.y + 1, ConfigColumnWidths[16], rowRect.height - 2), row.Node, row.IsSelected, row.Apply);
+                GUI.Label(new Rect(currentX, rowRect.y, ConfigColumnWidths[16], rowRect.height), GetCostDeltaString(row.Node), secondaryStyle);
+                currentX += ConfigColumnWidths[16];
+            }
+
+            if (IsColumnVisible(17)) {
+                DrawActionCell(new Rect(currentX, rowRect.y + 1, ConfigColumnWidths[17], rowRect.height - 2), row.Node, row.IsSelected, row.Apply);
             }
         }
 
@@ -2070,7 +2113,12 @@ namespace RealFuels
 
             // Purchase button (shows cost)
             GUI.enabled = canUse && !unlocked && cost > 0;
-            string purchaseLabel = cost > 0 ? $"Buy ({cost:N0}f)" : "Free";
+            string purchaseLabel;
+            if (cost > 0)
+                purchaseLabel = unlocked ? "Owned" : $"Buy ({cost:N0}√)";
+            else
+                purchaseLabel = "Free";
+
             if (GUI.Button(purchaseRect, purchaseLabel, smallButtonStyle))
             {
                 if (EntryCostManager.Instance.PurchaseConfig(configName, node.GetValue("techRequired")))
@@ -2085,7 +2133,11 @@ namespace RealFuels
             if (!node.HasValue(thrustRating))
                 return "-";
 
-            return Utilities.FormatThrust(scale * ThrustTL(node.GetValue(thrustRating), node));
+            float thrust = scale * ThrustTL(node.GetValue(thrustRating), node);
+            // Remove decimals for large thrust values
+            if (thrust >= 100f)
+                return $"{thrust:N0} kN";
+            return $"{thrust:N2} kN";
         }
 
         private string GetMinThrottleString(ConfigNode node)
@@ -2165,10 +2217,10 @@ namespace RealFuels
                 {
                     float gimbalRange = cTL.GimbalRange;
                     if (node.HasValue("gimbalMult"))
-                        gimbalRange *= float.Parse(node.GetValue("gimbalMult"));
+                        gimbalRange *= float.Parse(node.GetValue("gimbalMult"), CultureInfo.InvariantCulture);
 
                     if (gimbalRange >= 0)
-                        return $"{gimbalRange * gimbalMult:N1}d";
+                        return $"{gimbalRange * gimbalMult:0.#}°";
                 }
             }
 
@@ -2233,9 +2285,9 @@ namespace RealFuels
                 return true; // All columns visible in full view
 
             // Compact view: show only essential columns
-            // 0: Name, 1: Thrust, 3: ISP, 4: Mass, 6: Ignitions, 9: Burn Time, 14: Tech, 15: Cost, 16: Actions
+            // 0: Name, 1: Thrust, 3: ISP, 4: Mass, 6: Ignitions, 9: Rated Burn, 10: Tested Burn, 15: Tech, 16: Cost, 17: Actions
             return columnIndex == 0 || columnIndex == 1 || columnIndex == 3 || columnIndex == 4 ||
-                   columnIndex == 6 || columnIndex == 9 || columnIndex == 14 || columnIndex == 15 || columnIndex == 16;
+                   columnIndex == 6 || columnIndex == 9 || columnIndex == 10 || columnIndex == 15 || columnIndex == 16 || columnIndex == 17;
         }
 
         private string GetRatedBurnTimeString(ConfigNode node)
@@ -2249,8 +2301,8 @@ namespace RealFuels
             // If both values exist, show as "continuous/cumulative"
             if (hasRatedBurnTime && hasRatedContinuousBurnTime)
             {
-                string continuous = node.GetValue("ratedBurnTime");
-                string cumulative = node.GetValue("ratedContinuousBurnTime");
+                string continuous = node.GetValue("ratedContinuousBurnTime");
+                string cumulative = node.GetValue("ratedBurnTime");
                 return $"{continuous}/{cumulative}";
             }
 
@@ -2258,40 +2310,57 @@ namespace RealFuels
             return hasRatedBurnTime ? node.GetValue("ratedBurnTime") : node.GetValue("ratedContinuousBurnTime");
         }
 
+        private string GetTestedBurnTimeString(ConfigNode node)
+        {
+            // Values are copied to CONFIG level by ModuleManager patch
+            if (!node.HasValue("testedBurnTime"))
+                return "-";
+
+            float testedBurnTime = 0f;
+            if (node.TryGetValue("testedBurnTime", ref testedBurnTime))
+                return testedBurnTime.ToString("F0");
+
+            return "-";
+        }
+
         private string GetIgnitionReliabilityStartString(ConfigNode node)
         {
+            // Values are copied to CONFIG level by ModuleManager patch
             if (!node.HasValue("ignitionReliabilityStart"))
-                return "∞";
+                return "-";
             if (float.TryParse(node.GetValue("ignitionReliabilityStart"), out float val))
                 return $"{val:P1}";
-            return "∞";
+            return "-";
         }
 
         private string GetIgnitionReliabilityEndString(ConfigNode node)
         {
+            // Values are copied to CONFIG level by ModuleManager patch
             if (!node.HasValue("ignitionReliabilityEnd"))
-                return "∞";
+                return "-";
             if (float.TryParse(node.GetValue("ignitionReliabilityEnd"), out float val))
                 return $"{val:P1}";
-            return "∞";
+            return "-";
         }
 
         private string GetCycleReliabilityStartString(ConfigNode node)
         {
+            // Values are copied to CONFIG level by ModuleManager patch
             if (!node.HasValue("cycleReliabilityStart"))
-                return "∞";
+                return "-";
             if (float.TryParse(node.GetValue("cycleReliabilityStart"), out float val))
                 return $"{val:P1}";
-            return "∞";
+            return "-";
         }
 
         private string GetCycleReliabilityEndString(ConfigNode node)
         {
+            // Values are copied to CONFIG level by ModuleManager patch
             if (!node.HasValue("cycleReliabilityEnd"))
-                return "∞";
+                return "-";
             if (float.TryParse(node.GetValue("cycleReliabilityEnd"), out float val))
                 return $"{val:P1}";
-            return "∞";
+            return "-";
         }
 
         private string GetTechString(ConfigNode node)
@@ -2301,8 +2370,22 @@ namespace RealFuels
 
             string tech = node.GetValue("techRequired");
             if (techNameToTitle.TryGetValue(tech, out string title))
-                return title;
-            return tech;
+                tech = title;
+
+            // Abbreviate: keep first word, then first 4 letters of other words with "-"
+            var words = tech.Split(' ');
+            if (words.Length <= 1)
+                return tech;
+
+            var abbreviated = words[0];
+            for (int i = 1; i < words.Length; i++)
+            {
+                if (words[i].Length > 4)
+                    abbreviated += "-" + words[i].Substring(0, 4);
+                else
+                    abbreviated += "-" + words[i];
+            }
+            return abbreviated;
         }
 
         private string GetCostDeltaString(ConfigNode node)
@@ -2310,7 +2393,7 @@ namespace RealFuels
             if (!node.HasValue("cost"))
                 return "-";
 
-            float curCost = scale * float.Parse(node.GetValue("cost"));
+            float curCost = scale * float.Parse(node.GetValue("cost"), CultureInfo.InvariantCulture);
             if (techLevel != -1)
                 curCost = CostTL(curCost, node) - CostTL(0f, node);
 
@@ -2318,7 +2401,7 @@ namespace RealFuels
                 return "-";
 
             string sign = curCost < 0 ? string.Empty : "+";
-            return $"{sign}{curCost:N0}f";
+            return $"{sign}{curCost:N0}√";
         }
 
         #region Removed TestFlight UI Integration
@@ -2365,8 +2448,10 @@ namespace RealFuels
                 }
 
                 // Calculate total mass flow: F = mdot * Isp * g0
+                // Thrust is in kN (kilonewtons), convert to N (newtons) for the equation
                 const float g0 = 9.80665f;
-                float totalMassFlow = (thrust > 0f && isp > 0f) ? thrust / (isp * g0) : 0f;
+                float thrustN = thrust * 1000f;
+                float totalMassFlow = (thrustN > 0f && isp > 0f) ? thrustN / (isp * g0) : 0f;
 
                 // Get propellant ratios
                 var propNodes = node.GetNodes("PROPELLANT");
@@ -2422,12 +2507,1226 @@ namespace RealFuels
 
         private void EnsureTableTextures()
         {
-            if (rowHoverTex == null)
+            // Use Unity's implicit bool conversion to properly detect destroyed textures
+            if (!rowHoverTex)
                 rowHoverTex = Styles.CreateColorPixel(new Color(1f, 1f, 1f, 0.05f));
-            if (rowCurrentTex == null)
+            if (!rowCurrentTex)
                 rowCurrentTex = Styles.CreateColorPixel(new Color(0.3f, 0.6f, 1.0f, 0.20f)); // Subtle blue tint
-            if (rowLockedTex == null)
+            if (!rowLockedTex)
                 rowLockedTex = Styles.CreateColorPixel(new Color(1f, 0.5f, 0.3f, 0.15f)); // Subtle orange tint
+            if (!zebraStripeTex)
+                zebraStripeTex = Styles.CreateColorPixel(new Color(0.05f, 0.05f, 0.05f, 0.3f));
+            if (!columnSeparatorTex)
+                columnSeparatorTex = Styles.CreateColorPixel(new Color(0.25f, 0.25f, 0.25f, 0.9f));
+        }
+
+        private void EnsureChartTextures()
+        {
+            // Use Unity's implicit bool conversion to properly detect destroyed textures
+            if (!chartBgTex)
+                chartBgTex = Styles.CreateColorPixel(new Color(0.1f, 0.1f, 0.1f, 0.8f));
+            if (!chartGridMajorTex)
+                chartGridMajorTex = Styles.CreateColorPixel(new Color(0.3f, 0.3f, 0.3f, 0.4f)); // Major gridlines at 20%
+            if (!chartGridMinorTex)
+                chartGridMinorTex = Styles.CreateColorPixel(new Color(0.25f, 0.25f, 0.25f, 0.2f)); // Minor gridlines at 10%, barely visible
+            if (!chartGreenZoneTex)
+                chartGreenZoneTex = Styles.CreateColorPixel(new Color(0.2f, 0.5f, 0.2f, 0.15f));
+            if (!chartYellowZoneTex)
+                chartYellowZoneTex = Styles.CreateColorPixel(new Color(0.5f, 0.5f, 0.2f, 0.15f));
+            if (!chartRedZoneTex)
+                chartRedZoneTex = Styles.CreateColorPixel(new Color(0.5f, 0.2f, 0.2f, 0.15f));
+            if (!chartDarkRedZoneTex)
+                chartDarkRedZoneTex = Styles.CreateColorPixel(new Color(0.4f, 0.1f, 0.1f, 0.25f)); // Darker red for 100× zone
+            if (!chartStartupZoneTex)
+                chartStartupZoneTex = Styles.CreateColorPixel(new Color(0.15f, 0.3f, 0.5f, 0.3f));
+            if (!chartLineTex)
+                chartLineTex = Styles.CreateColorPixel(new Color(0.8f, 0.4f, 0.4f, 1f));
+            if (!chartMarkerBlueTex)
+                chartMarkerBlueTex = Styles.CreateColorPixel(new Color(0.4f, 0.6f, 0.9f, 0.5f)); // Blue for startup zone end
+            if (!chartMarkerGreenTex)
+                chartMarkerGreenTex = Styles.CreateColorPixel(new Color(0.3f, 0.8f, 0.3f, 0.5f)); // Less prominent
+            if (!chartMarkerYellowTex)
+                chartMarkerYellowTex = Styles.CreateColorPixel(new Color(0.9f, 0.9f, 0.3f, 0.5f)); // Less prominent
+            if (!chartMarkerOrangeTex)
+                chartMarkerOrangeTex = Styles.CreateColorPixel(new Color(1f, 0.65f, 0f, 0.5f)); // Less prominent
+            if (!chartMarkerDarkRedTex)
+                chartMarkerDarkRedTex = Styles.CreateColorPixel(new Color(0.8f, 0.1f, 0.1f, 0.5f)); // Less prominent
+            if (!chartSeparatorTex)
+                chartSeparatorTex = Styles.CreateColorPixel(new Color(0.6f, 0.6f, 0.6f, 0.5f)); // Less prominent
+            if (!chartHoverLineTex)
+                chartHoverLineTex = Styles.CreateColorPixel(new Color(1f, 1f, 1f, 0.4f));
+            if (!chartOrangeLineTex)
+                chartOrangeLineTex = Styles.CreateColorPixel(new Color(1f, 0.5f, 0.2f, 1f));
+            if (!chartGreenLineTex)
+                chartGreenLineTex = Styles.CreateColorPixel(new Color(0.3f, 0.9f, 0.3f, 1f));
+            if (!chartBlueLineTex)
+                chartBlueLineTex = Styles.CreateColorPixel(new Color(0.5f, 0.85f, 1.0f, 1f)); // Lighter blue for current data
+            if (!chartTooltipBgTex)
+                chartTooltipBgTex = Styles.CreateColorPixel(new Color(0.1f, 0.1f, 0.1f, 0.95f));
+            if (!infoPanelBgTex)
+                infoPanelBgTex = Styles.CreateColorPixel(new Color(0.12f, 0.12f, 0.12f, 0.9f));
+        }
+
+        /// <summary>
+        /// Format MTBF (mean time between failures) in human-readable units.
+        /// </summary>
+        private string FormatMTBF(float mtbfSeconds)
+        {
+            if (float.IsInfinity(mtbfSeconds) || float.IsNaN(mtbfSeconds))
+                return "∞";
+
+            if (mtbfSeconds < 60f)
+                return $"{mtbfSeconds:F1}s";
+            if (mtbfSeconds < 3600f)
+                return $"{mtbfSeconds / 60f:F1}m";
+            if (mtbfSeconds < 86400f)
+                return $"{mtbfSeconds / 3600f:F1}h";
+            if (mtbfSeconds < 31536000f)
+                return $"{mtbfSeconds / 86400f:F1}d";
+            return $"{mtbfSeconds / 31536000f:F1}y";
+        }
+
+        /// <summary>
+        /// Numerically integrate the cycle curve from t1 to t2 using trapezoidal rule.
+        /// Returns the integral of the cycle modifier over the time interval.
+        /// </summary>
+        private float IntegrateCycleCurve(FloatCurve curve, float t1, float t2, int steps)
+        {
+            if (t2 <= t1) return 0f;
+
+            float dt = (t2 - t1) / steps;
+            float sum = 0f;
+
+            // Trapezoidal rule: integrate by averaging adjacent points
+            for (int i = 0; i < steps; i++)
+            {
+                float tStart = t1 + i * dt;
+                float tEnd = tStart + dt;
+                float valueStart = curve.Evaluate(tStart);
+                float valueEnd = curve.Evaluate(tEnd);
+                sum += (valueStart + valueEnd) * 0.5f * dt;
+            }
+
+            return sum;
+        }
+
+        /// <summary>
+        /// Build the TestFlight cycle curve exactly as TestFlight_Generic_Engines.cfg does.
+        /// This matches the ModuleManager patch logic from RealismOverhaul.
+        /// </summary>
+        private FloatCurve BuildTestFlightCycleCurve(float ratedBurnTime, float testedBurnTime, float overburnPenalty, bool hasTestedBurnTime)
+        {
+            FloatCurve curve = new FloatCurve();
+
+            // Key 1: Early burn high penalty
+            curve.Add(0.00f, 10.00f);
+
+            // Key 2: Stabilize at 5 seconds
+            curve.Add(5.00f, 1.00f, -0.8f, 0f);
+
+            // Key 3: Maintain 1.0 until rated burn time (+ 5 second cushion)
+            float rbtCushioned = ratedBurnTime + 5f;
+            curve.Add(rbtCushioned, 1f, 0f, 0f);
+
+            if (hasTestedBurnTime)
+            {
+                // Key 4: Tested burn time with smooth transition
+                float ratedToTestedInterval = testedBurnTime - rbtCushioned;
+                float tbtTransitionSlope = 3.135f / ratedToTestedInterval;
+                float tbtTransitionSlopeMult = overburnPenalty - 1.0f;
+                tbtTransitionSlope *= tbtTransitionSlopeMult;
+                curve.Add(testedBurnTime, overburnPenalty, tbtTransitionSlope, tbtTransitionSlope);
+
+                // Key 5: Complete failure at 2.5x tested burn time
+                float failTime = testedBurnTime * 2.5f;
+                float tbtToFailInterval = failTime - testedBurnTime;
+                float failInSlope = 1.989f / tbtToFailInterval;
+                float failInSlopeMult = 100f - overburnPenalty;
+                failInSlope *= failInSlopeMult;
+                curve.Add(failTime, 100f, failInSlope, 0f);
+            }
+            else
+            {
+                // Key 4: Complete failure at 2.5x rated burn time (standard overburn)
+                float failTime = ratedBurnTime * 2.5f;
+                float rbtToFailInterval = failTime - rbtCushioned;
+                float failInSlope = 292.8f / rbtToFailInterval;
+                curve.Add(failTime, 100f, failInSlope, 0f);
+            }
+
+            return curve;
+        }
+
+        /// <summary>
+        /// Convert time to x-position on the chart, using either linear or logarithmic scale.
+        /// </summary>
+        private float TimeToXPosition(float time, float maxTime, float plotX, float plotWidth, bool useLogScale)
+        {
+            if (useLogScale)
+            {
+                // Logarithmic scale: use log10(time + 1) to handle t=0
+                // Map from log10(1) to log10(maxTime + 1)
+                float logTime = Mathf.Log10(time + 1f);
+                float logMax = Mathf.Log10(maxTime + 1f);
+                return plotX + (logTime / logMax) * plotWidth;
+            }
+            else
+            {
+                // Linear scale
+                return plotX + (time / maxTime) * plotWidth;
+            }
+        }
+
+        /// <summary>
+        /// Convert x-position back to time, using either linear or logarithmic scale.
+        /// </summary>
+        private float XPositionToTime(float xPos, float maxTime, float plotX, float plotWidth, bool useLogScale)
+        {
+            float normalizedX = (xPos - plotX) / plotWidth;
+            normalizedX = Mathf.Clamp01(normalizedX);
+
+            if (useLogScale)
+            {
+                // Inverse of log scale: 10^(normalizedX * log10(maxTime + 1)) - 1
+                float logMax = Mathf.Log10(maxTime + 1f);
+                return Mathf.Pow(10f, normalizedX * logMax) - 1f;
+            }
+            else
+            {
+                // Linear scale
+                return normalizedX * maxTime;
+            }
+        }
+
+        /// <summary>
+        /// Convert failure probability to y-position on the chart, using either linear or logarithmic scale.
+        /// </summary>
+        private float FailureProbToYPosition(float failureProb, float yAxisMax, float plotY, float plotHeight, bool useLogScale)
+        {
+            if (useLogScale)
+            {
+                // Logarithmic scale: use log10(prob + 0.0001) to handle near-zero values
+                // The +0.0001 offset prevents log(0) and provides a visible baseline
+                float logProb = Mathf.Log10(failureProb + 0.0001f);
+                float logMax = Mathf.Log10(yAxisMax + 0.0001f);
+                float logMin = Mathf.Log10(0.0001f); // Minimum visible value
+                float normalizedLog = (logProb - logMin) / (logMax - logMin);
+                return plotY + plotHeight - (normalizedLog * plotHeight);
+            }
+            else
+            {
+                // Linear scale
+                return plotY + plotHeight - ((failureProb / yAxisMax) * plotHeight);
+            }
+        }
+
+        private void DrawFailureProbabilityChart(ConfigNode configNode, float width, float height)
+        {
+            // Ensure textures are cached to prevent loss on window focus change
+            EnsureChartTextures();
+
+            // Values are copied to CONFIG level by ModuleManager patch
+            // Get TestFlight data for both start and end (we plot both)
+            if (!configNode.HasValue("cycleReliabilityStart")) return;
+            if (!configNode.HasValue("cycleReliabilityEnd")) return;
+            if (!float.TryParse(configNode.GetValue("cycleReliabilityStart"), out float cycleReliabilityStart)) return;
+            if (!float.TryParse(configNode.GetValue("cycleReliabilityEnd"), out float cycleReliabilityEnd)) return;
+
+            // Validate reliability is in valid range
+            if (cycleReliabilityStart <= 0f || cycleReliabilityStart > 1f) return;
+            if (cycleReliabilityEnd <= 0f || cycleReliabilityEnd > 1f) return;
+
+            float ratedBurnTime = 0;
+            if (!configNode.TryGetValue("ratedBurnTime", ref ratedBurnTime) || ratedBurnTime <= 0) return;
+
+            float ratedContinuousBurnTime = ratedBurnTime;
+            configNode.TryGetValue("ratedContinuousBurnTime", ref ratedContinuousBurnTime);
+
+            // Skip chart if this is a cumulative-limited engine (continuous << total)
+            if (ratedContinuousBurnTime < ratedBurnTime * 0.9f) return;
+
+            // Read testedBurnTime to match TestFlight's exact behavior
+            float testedBurnTime = 0f;
+            bool hasTestedBurnTime = configNode.TryGetValue("testedBurnTime", ref testedBurnTime) && testedBurnTime > ratedBurnTime;
+
+            // Split the area: chart on left (60%), info on right (40%)
+            float chartWidth = width * 0.58f;
+            float infoWidth = width * 0.42f;
+
+            float overburnPenalty = 2.0f; // Default from TestFlight_Generic_Engines.cfg
+            configNode.TryGetValue("overburnPenalty", ref overburnPenalty);
+
+            // Build the actual TestFlight cycle curve
+            FloatCurve cycleCurve = BuildTestFlightCycleCurve(ratedBurnTime, testedBurnTime, overburnPenalty, hasTestedBurnTime);
+
+            // Main container
+            Rect containerRect = GUILayoutUtility.GetRect(width, height);
+
+            // Chart area (left side)
+            const float padding = 38f;
+            float plotWidth = chartWidth - padding * 2;
+            float plotHeight = height - padding * 2;
+
+            // Extend max time to show the full cycle curve beyond where it reaches 100× modifier
+            // The cycle curve reaches maximum at 2.5× (rated or tested), extend to 3.5× to see asymptotic behavior
+            float maxTime = hasTestedBurnTime ? testedBurnTime * 3.5f : ratedBurnTime * 3.5f;
+
+            Rect chartRect = new Rect(containerRect.x, containerRect.y, chartWidth, height);
+            Rect plotArea = new Rect(chartRect.x + padding, chartRect.y + padding, plotWidth, plotHeight);
+
+            // Info panel area (right side)
+            Rect infoRect = new Rect(containerRect.x + chartWidth, containerRect.y, infoWidth, height);
+
+            // Draw background
+            if (Event.current.type == EventType.Repaint)
+            {
+                GUI.DrawTexture(chartRect, chartBgTex);
+            }
+
+            // Calculate failure probabilities for both curves to determine Y-axis scale
+            const int curvePoints = 100;
+            float[] failureProbsStart = new float[curvePoints];
+            float[] failureProbsEnd = new float[curvePoints];
+            float maxFailureProb = 0f;
+
+            // Base failure rates (from reliability at rated burn time)
+            float baseRateStart = -Mathf.Log(cycleReliabilityStart) / ratedBurnTime;
+            float baseRateEnd = -Mathf.Log(cycleReliabilityEnd) / ratedBurnTime;
+
+            for (int i = 0; i < curvePoints; i++)
+            {
+                float t = (i / (float)(curvePoints - 1)) * maxTime;
+
+                // Calculate failure using TestFlight's cycle curve
+                // For t <= ratedBurnTime: standard exponential reliability
+                // For t > ratedBurnTime: integrate the cycle modifier to account for varying failure rate
+
+                // Calculate for start (0 data)
+                float failureProbStart = 0f;
+                if (t <= ratedBurnTime)
+                {
+                    failureProbStart = 1f - Mathf.Pow(cycleReliabilityStart, t / ratedBurnTime);
+                }
+                else
+                {
+                    // Base failure up to rated time
+                    float survivalToRated = cycleReliabilityStart;
+
+                    // Integrate cycle modifier from ratedBurnTime to t using numerical integration
+                    float integratedModifier = IntegrateCycleCurve(cycleCurve, ratedBurnTime, t, 20);
+
+                    // Additional failure rate scaled by integrated modifier
+                    float additionalFailRate = baseRateStart * integratedModifier;
+
+                    // Total survival = survive to rated * survive additional time
+                    float survivalProb = survivalToRated * Mathf.Exp(-additionalFailRate);
+                    failureProbStart = Mathf.Clamp01(1f - survivalProb);
+                }
+                failureProbsStart[i] = failureProbStart;
+                maxFailureProb = Mathf.Max(maxFailureProb, failureProbStart);
+
+                // Calculate for end (max data)
+                float failureProbEnd = 0f;
+                if (t <= ratedBurnTime)
+                {
+                    failureProbEnd = 1f - Mathf.Pow(cycleReliabilityEnd, t / ratedBurnTime);
+                }
+                else
+                {
+                    // Base failure up to rated time
+                    float survivalToRated = cycleReliabilityEnd;
+
+                    // Integrate cycle modifier from ratedBurnTime to t
+                    float integratedModifier = IntegrateCycleCurve(cycleCurve, ratedBurnTime, t, 20);
+
+                    // Additional failure rate scaled by integrated modifier
+                    float additionalFailRate = baseRateEnd * integratedModifier;
+
+                    // Total survival = survive to rated * survive additional time
+                    float survivalProb = survivalToRated * Mathf.Exp(-additionalFailRate);
+                    failureProbEnd = Mathf.Clamp01(1f - survivalProb);
+                }
+                failureProbsEnd[i] = failureProbEnd;
+                maxFailureProb = Mathf.Max(maxFailureProb, failureProbEnd);
+            }
+
+            // Get current TestFlight data (or use simulated value)
+            float realDataPercentage = TestFlightWrapper.GetDataPercentage(part);
+            float dataPercentage = useSimulatedData ? simulatedDataPercentage : realDataPercentage;
+            bool hasCurrentData = (useSimulatedData && simulatedDataPercentage >= 0f) || (dataPercentage >= 0f && dataPercentage <= 1f);
+            float[] failureProbsCurrent = null;
+            float cycleReliabilityCurrent = 0f;
+            float baseRateCurrent = 0f;
+
+            if (hasCurrentData)
+            {
+                // Interpolate current reliability between start and end based on data percentage
+                cycleReliabilityCurrent = Mathf.Lerp(cycleReliabilityStart, cycleReliabilityEnd, dataPercentage);
+                baseRateCurrent = -Mathf.Log(cycleReliabilityCurrent) / ratedBurnTime;
+                failureProbsCurrent = new float[curvePoints];
+
+                for (int i = 0; i < curvePoints; i++)
+                {
+                    float t = (i / (float)(curvePoints - 1)) * maxTime;
+                    float failureProbCurrent = 0f;
+
+                    if (t <= ratedBurnTime)
+                    {
+                        failureProbCurrent = 1f - Mathf.Pow(cycleReliabilityCurrent, t / ratedBurnTime);
+                    }
+                    else
+                    {
+                        float survivalToRated = cycleReliabilityCurrent;
+                        float integratedModifier = IntegrateCycleCurve(cycleCurve, ratedBurnTime, t, 20);
+                        float additionalFailRate = baseRateCurrent * integratedModifier;
+                        float survivalProb = survivalToRated * Mathf.Exp(-additionalFailRate);
+                        failureProbCurrent = Mathf.Clamp01(1f - survivalProb);
+                    }
+
+                    failureProbsCurrent[i] = failureProbCurrent;
+                    maxFailureProb = Mathf.Max(maxFailureProb, failureProbCurrent);
+                }
+            }
+
+            // Apply cluster math: for N engines, probability at least one fails = 1 - (1 - singleFailProb)^N
+            if (clusterSize > 1)
+            {
+                for (int i = 0; i < curvePoints; i++)
+                {
+                    // Transform each failure probability for cluster
+                    float singleSurvival = 1f - failureProbsStart[i];
+                    failureProbsStart[i] = 1f - Mathf.Pow(singleSurvival, clusterSize);
+
+                    singleSurvival = 1f - failureProbsEnd[i];
+                    failureProbsEnd[i] = 1f - Mathf.Pow(singleSurvival, clusterSize);
+
+                    if (hasCurrentData)
+                    {
+                        singleSurvival = 1f - failureProbsCurrent[i];
+                        failureProbsCurrent[i] = 1f - Mathf.Pow(singleSurvival, clusterSize);
+                    }
+
+                    // Update max failure probability after cluster transformation
+                    maxFailureProb = Mathf.Max(maxFailureProb, failureProbsStart[i]);
+                    maxFailureProb = Mathf.Max(maxFailureProb, failureProbsEnd[i]);
+                    if (hasCurrentData)
+                        maxFailureProb = Mathf.Max(maxFailureProb, failureProbsCurrent[i]);
+                }
+            }
+
+            // Set Y-axis max to 2% above the maximum failure probability
+            float yAxisMaxRaw = Mathf.Min(1f, maxFailureProb + 0.02f);
+
+            // Round up to a "nice" number for clean axis labels
+            float yAxisMax = RoundToNiceNumber(yAxisMaxRaw, true);
+            // Ensure minimum range for readability
+            if (yAxisMax < 0.05f) yAxisMax = 0.05f;
+
+            // Draw grid lines and labels with dynamic scale
+            var labelStyle = new GUIStyle(GUI.skin.label) { fontSize = 13, normal = { textColor = Color.grey } };
+
+            if (useLogScaleY)
+            {
+                // Logarithmic Y-axis labels: 0.01%, 0.1%, 1%, 10%, 100%
+                float[] logValues = { 0.0001f, 0.001f, 0.01f, 0.1f, 1f }; // As fractions
+                foreach (float failureProb in logValues)
+                {
+                    if (failureProb > yAxisMax) break; // Don't show labels beyond max
+
+                    float y = FailureProbToYPosition(failureProb, yAxisMax, plotArea.y, plotArea.height, useLogScaleY);
+                    Rect lineRect = new Rect(plotArea.x, y, plotArea.width, 1);
+                    if (Event.current.type == EventType.Repaint)
+                        GUI.DrawTexture(lineRect, chartGridMajorTex);
+
+                    float labelValue = failureProb * 100f;
+                    string label = labelValue < 0.1f ? $"{labelValue:F3}%" : (labelValue < 1f ? $"{labelValue:F2}%" : (labelValue < 10f ? $"{labelValue:F1}%" : $"{labelValue:F0}%"));
+                    GUI.Label(new Rect(plotArea.x - 35, y - 10, 30, 20), label, labelStyle);
+                }
+            }
+            else
+            {
+                // Linear Y-axis: Major gridlines at 20% intervals, minor at 10%
+                // Draw all gridlines (major + minor)
+                for (int i = 0; i <= 10; i++)
+                {
+                    bool isMajor = (i % 2 == 0); // Major gridlines at 0%, 20%, 40%, 60%, 80%, 100%
+                    float y = plotArea.y + plotArea.height - (i * plotArea.height / 10f);
+                    Rect lineRect = new Rect(plotArea.x, y, plotArea.width, 1);
+
+                    if (Event.current.type == EventType.Repaint)
+                    {
+                        // Use major or minor gridline texture
+                        GUI.DrawTexture(lineRect, isMajor ? chartGridMajorTex : chartGridMinorTex);
+                    }
+
+                    // Only show labels on major gridlines
+                    if (isMajor)
+                    {
+                        float labelValue = (i / 10f) * yAxisMax * 100f;
+                        string label = labelValue < 1f ? $"{labelValue:F2}%" : (labelValue < 10f ? $"{labelValue:F1}%" : $"{labelValue:F0}%");
+                        GUI.Label(new Rect(plotArea.x - 35, y - 10, 30, 20), label, labelStyle);
+                    }
+                }
+            }
+
+            // Draw zone backgrounds based on TestFlight cycle curve segments
+            // Zone boundaries match the cycle curve keys
+            float startupEndX = TimeToXPosition(5f, maxTime, plotArea.x, plotArea.width, useLogScaleX); // End of startup zone (0-5s)
+            float ratedCushionedX = TimeToXPosition(ratedBurnTime + 5f, maxTime, plotArea.x, plotArea.width, useLogScaleX); // Rated + 5s cushion
+            float testedX = hasTestedBurnTime ? TimeToXPosition(testedBurnTime, maxTime, plotArea.x, plotArea.width, useLogScaleX) : 0f;
+
+            // Calculate 100× modifier point (at 2.5× the reference burn time)
+            float referenceBurnTime = hasTestedBurnTime ? testedBurnTime : ratedBurnTime;
+            float max100xTime = referenceBurnTime * 2.5f;
+            float max100xX = TimeToXPosition(max100xTime, maxTime, plotArea.x, plotArea.width, useLogScaleX);
+
+            if (Event.current.type == EventType.Repaint)
+            {
+                // Zone 1: Startup (0-5s) - Dark blue (high initial risk)
+                GUI.DrawTexture(new Rect(plotArea.x, plotArea.y, startupEndX - plotArea.x, plotArea.height), chartStartupZoneTex);
+
+                // Zone 2: Rated Operation (5s to ratedBurnTime+5) - Green (safe zone)
+                GUI.DrawTexture(new Rect(startupEndX, plotArea.y, ratedCushionedX - startupEndX, plotArea.height),
+                    chartGreenZoneTex);
+
+                if (hasTestedBurnTime)
+                {
+                    // Zone 3: Tested Overburn (rated+5 to tested) - Yellow (reduced penalty overburn)
+                    GUI.DrawTexture(new Rect(ratedCushionedX, plotArea.y, testedX - ratedCushionedX, plotArea.height),
+                        chartYellowZoneTex);
+
+                    // Zone 4: Severe Overburn (tested to 100×) - Red (danger zone)
+                    GUI.DrawTexture(new Rect(testedX, plotArea.y, max100xX - testedX, plotArea.height),
+                        chartRedZoneTex);
+
+                    // Zone 5: Maximum Overburn (100× to end) - Darker red (nearly linear failure increase)
+                    GUI.DrawTexture(new Rect(max100xX, plotArea.y, plotArea.x + plotArea.width - max100xX, plotArea.height),
+                        chartDarkRedZoneTex);
+                }
+                else
+                {
+                    // Zone 3: Overburn (rated+5 to 100×) - Red (danger zone)
+                    GUI.DrawTexture(new Rect(ratedCushionedX, plotArea.y, max100xX - ratedCushionedX, plotArea.height),
+                        chartRedZoneTex);
+
+                    // Zone 4: Maximum Overburn (100× to end) - Darker red (nearly linear failure increase)
+                    GUI.DrawTexture(new Rect(max100xX, plotArea.y, plotArea.x + plotArea.width - max100xX, plotArea.height),
+                        chartDarkRedZoneTex);
+                }
+            }
+
+            // Draw vertical zone separators (thinner and less prominent)
+            if (Event.current.type == EventType.Repaint)
+            {
+                // Startup zone end (5s) - Blue
+                GUI.DrawTexture(new Rect(startupEndX, plotArea.y, 1, plotArea.height), chartMarkerBlueTex);
+
+                // Rated burn time (+ 5s cushion) - Green
+                GUI.DrawTexture(new Rect(ratedCushionedX, plotArea.y, 1, plotArea.height), chartMarkerGreenTex);
+
+                // Tested burn time (if present) - Yellow
+                if (hasTestedBurnTime)
+                {
+                    GUI.DrawTexture(new Rect(testedX, plotArea.y, 1, plotArea.height), chartMarkerYellowTex);
+                }
+
+                // 100× modifier point (maximum cycle penalty) - Dark Red
+                GUI.DrawTexture(new Rect(max100xX, plotArea.y, 1, plotArea.height), chartMarkerDarkRedTex);
+            }
+
+            // Now calculate point positions for all curves using the dynamic Y scale
+            Vector2[] pointsStart = new Vector2[curvePoints];
+            Vector2[] pointsEnd = new Vector2[curvePoints];
+            Vector2[] pointsCurrent = hasCurrentData ? new Vector2[curvePoints] : null;
+
+            for (int i = 0; i < curvePoints; i++)
+            {
+                float t = (i / (float)(curvePoints - 1)) * maxTime;
+                float x = TimeToXPosition(t, maxTime, plotArea.x, plotArea.width, useLogScaleX);
+
+                // Start curve (0 data) - orange
+                float yStart = FailureProbToYPosition(failureProbsStart[i], yAxisMax, plotArea.y, plotArea.height, useLogScaleY);
+                if (float.IsNaN(x) || float.IsNaN(yStart) || float.IsInfinity(x) || float.IsInfinity(yStart))
+                {
+                    x = plotArea.x;
+                    yStart = plotArea.y + plotArea.height;
+                }
+                pointsStart[i] = new Vector2(x, yStart);
+
+                // End curve (max data) - green
+                float yEnd = FailureProbToYPosition(failureProbsEnd[i], yAxisMax, plotArea.y, plotArea.height, useLogScaleY);
+                if (float.IsNaN(x) || float.IsNaN(yEnd) || float.IsInfinity(x) || float.IsInfinity(yEnd))
+                {
+                    x = plotArea.x;
+                    yEnd = plotArea.y + plotArea.height;
+                }
+                pointsEnd[i] = new Vector2(x, yEnd);
+
+                // Current data curve - light blue
+                if (hasCurrentData)
+                {
+                    float yCurrent = FailureProbToYPosition(failureProbsCurrent[i], yAxisMax, plotArea.y, plotArea.height, useLogScaleY);
+                    if (float.IsNaN(x) || float.IsNaN(yCurrent) || float.IsInfinity(x) || float.IsInfinity(yCurrent))
+                    {
+                        x = plotArea.x;
+                        yCurrent = plotArea.y + plotArea.height;
+                    }
+                    pointsCurrent[i] = new Vector2(x, yCurrent);
+                }
+            }
+
+            // Draw all curves
+            if (Event.current.type == EventType.Repaint)
+            {
+                // Draw start curve (0 data) in orange
+                for (int i = 0; i < pointsStart.Length - 1; i++)
+                {
+                    DrawLine(pointsStart[i], pointsStart[i + 1], chartOrangeLineTex, 2.5f);
+                }
+
+                // Draw end curve (max data) in green
+                for (int i = 0; i < pointsEnd.Length - 1; i++)
+                {
+                    DrawLine(pointsEnd[i], pointsEnd[i + 1], chartGreenLineTex, 2.5f);
+                }
+
+                // Draw current data curve in light blue
+                if (hasCurrentData && pointsCurrent != null)
+                {
+                    for (int i = 0; i < pointsCurrent.Length - 1; i++)
+                    {
+                        DrawLine(pointsCurrent[i], pointsCurrent[i + 1], chartBlueLineTex, 2.5f);
+                    }
+                }
+            }
+
+            // X-axis labels (time in minutes)
+            var timeStyle = new GUIStyle(GUI.skin.label) { fontSize = 13, normal = { textColor = Color.grey }, alignment = TextAnchor.UpperCenter };
+
+            if (useLogScaleX)
+            {
+                // Logarithmic scale labels: show key time points
+                float[] logTimes = { 0.1f, 1f, 10f, 60f, 300f, 600f, 1800f, 3600f };
+                foreach (float time in logTimes)
+                {
+                    if (time > maxTime) break;
+                    float x = TimeToXPosition(time, maxTime, plotArea.x, plotArea.width, useLogScaleX);
+                    string label = time < 60f ? $"{time:F0}s" : $"{time / 60:F0}m";
+                    GUI.Label(new Rect(x - 25, plotArea.y + plotArea.height + 2, 50, 20), label, timeStyle);
+                }
+            }
+            else
+            {
+                // Linear scale labels
+                for (int i = 0; i <= 4; i++)
+                {
+                    float time = (i / 4f) * maxTime;
+                    float x = TimeToXPosition(time, maxTime, plotArea.x, plotArea.width, useLogScaleX);
+                    GUI.Label(new Rect(x - 25, plotArea.y + plotArea.height + 2, 50, 20), $"{time / 60:F0}m", timeStyle);
+                }
+            }
+
+            // Chart title
+            var titleStyle = new GUIStyle(GUI.skin.label) { fontSize = 16, fontStyle = FontStyle.Bold, normal = { textColor = Color.white }, alignment = TextAnchor.MiddleCenter };
+            GUI.Label(new Rect(chartRect.x, chartRect.y + 4, chartWidth, 24), "Failure Probability vs Burn Time", titleStyle);
+
+            // Legend with colored circles
+            var legendStyle = new GUIStyle(GUI.skin.label) { fontSize = 13, normal = { textColor = Color.white }, alignment = TextAnchor.UpperLeft };
+            float legendX = plotArea.x + 10;
+            float legendY = plotArea.y + 5;
+
+            // Orange circle and line for 0 data
+            DrawCircle(new Rect(legendX, legendY + 5, 8, 8), chartOrangeLineTex);
+            GUI.DrawTexture(new Rect(legendX + 10, legendY + 7, 15, 3), chartOrangeLineTex);
+            GUI.Label(new Rect(legendX + 28, legendY, 80, 18), "0 Data", legendStyle);
+
+            // Blue circle and line for current data (if available)
+            if (hasCurrentData)
+            {
+                DrawCircle(new Rect(legendX, legendY + 23, 8, 8), chartBlueLineTex);
+                GUI.DrawTexture(new Rect(legendX + 10, legendY + 25, 15, 3), chartBlueLineTex);
+                GUI.Label(new Rect(legendX + 28, legendY + 18, 100, 18), "Current Data", legendStyle);
+
+                // Green circle and line for max data (shifted down)
+                DrawCircle(new Rect(legendX, legendY + 41, 8, 8), chartGreenLineTex);
+                GUI.DrawTexture(new Rect(legendX + 10, legendY + 43, 15, 3), chartGreenLineTex);
+                GUI.Label(new Rect(legendX + 28, legendY + 36, 80, 18), "Max Data", legendStyle);
+            }
+            else
+            {
+                // Green circle and line for max data (no shift if no current data)
+                DrawCircle(new Rect(legendX, legendY + 23, 8, 8), chartGreenLineTex);
+                GUI.DrawTexture(new Rect(legendX + 10, legendY + 25, 15, 3), chartGreenLineTex);
+                GUI.Label(new Rect(legendX + 28, legendY + 18, 80, 18), "Max Data", legendStyle);
+            }
+
+            // Tooltip handling and hover line
+            Vector2 mousePos = Event.current.mousePosition;
+            if (plotArea.Contains(mousePos))
+            {
+                // Draw vertical hover line
+                if (Event.current.type == EventType.Repaint)
+                {
+                    GUI.DrawTexture(new Rect(mousePos.x, plotArea.y, 1, plotArea.height), chartHoverLineTex);
+                }
+
+                // Calculate the time at mouse position
+                float mouseT = XPositionToTime(mousePos.x, maxTime, plotArea.x, plotArea.width, useLogScaleX);
+                mouseT = Mathf.Clamp(mouseT, 0f, maxTime);
+
+                // Determine which zone we're in
+                string zoneName = "";
+                if (mouseT <= 5f)
+                {
+                    zoneName = "Engine Startup";
+                }
+                else if (mouseT <= ratedBurnTime + 5f)
+                {
+                    zoneName = "Rated Operation";
+                }
+                else if (hasTestedBurnTime && mouseT <= testedBurnTime)
+                {
+                    zoneName = "Tested Overburn";
+                }
+                else if (mouseT <= max100xTime)
+                {
+                    zoneName = "Severe Overburn";
+                }
+                else
+                {
+                    zoneName = "Maximum Overburn";
+                }
+
+                // Calculate cycle modifier at this time
+                float cycleModifier = cycleCurve.Evaluate(mouseT);
+
+                // Check if hovering near vertical markers for specific marker info
+                bool nearStartupMarker = Mathf.Abs(mousePos.x - startupEndX) < 8f;
+                bool nearRatedMarker = Mathf.Abs(mousePos.x - ratedCushionedX) < 8f;
+                bool nearTestedMarker = hasTestedBurnTime && Mathf.Abs(mousePos.x - testedX) < 8f;
+                bool near100xMarker = Mathf.Abs(mousePos.x - max100xX) < 8f;
+
+                string tooltipText = "";
+                string valueColor = "#88DDFF"; // Light cyan for values
+
+                if (nearStartupMarker)
+                {
+                    tooltipText = $"<b><color=#6699CC>Startup Period End</color></b>\n\nFailure risk drops from <color={valueColor}>10×</color> to <color={valueColor}>1×</color> during startup.\nAfter <color={valueColor}>5 seconds</color>, the engine reaches stable operation.";
+                }
+                else if (nearRatedMarker)
+                {
+                    float ratedMinutes = ratedBurnTime / 60f;
+                    string ratedTimeStr = ratedMinutes >= 1f ? $"{ratedMinutes:F1}m" : $"{ratedBurnTime:F0}s";
+                    tooltipText = $"<b><color=#66DD66>Rated Burn Time</color></b>\n\nThis engine is designed to run for <color={valueColor}>{ratedTimeStr}</color>.\nBeyond this point, overburn penalties increase failure risk.";
+                }
+                else if (nearTestedMarker)
+                {
+                    float testedMinutes = testedBurnTime / 60f;
+                    string testedTimeStr = testedMinutes >= 1f ? $"{testedMinutes:F1}m" : $"{testedBurnTime:F0}s";
+                    tooltipText = $"<b><color=#FFCC44>Tested Overburn Limit</color></b>\n\nThis engine was tested to <color={valueColor}>{testedTimeStr}</color> in real life.\nFailure risk reaches <color={valueColor}>{overburnPenalty:F1}×</color> at this point.\nBeyond here, risk increases rapidly toward certain failure.";
+                }
+                else if (near100xMarker)
+                {
+                    float max100xMinutes = max100xTime / 60f;
+                    string max100xTimeStr = max100xMinutes >= 1f ? $"{max100xMinutes:F1}m" : $"{max100xTime:F0}s";
+                    tooltipText = $"<b><color=#CC2222>Maximum Cycle Penalty (100×)</color></b>\n\nAt <color={valueColor}>{max100xTimeStr}</color>, the failure rate multiplier reaches its maximum of <color={valueColor}>100×</color>.\n\nBeyond this point, it doesn't get much worse—failure probability increases nearly linearly with time.";
+                }
+                else
+                {
+                    // Calculate failure probabilities at mouse position
+                    float mouseFailStart = 0f;
+                    float mouseFailEnd = 0f;
+                    float mouseFailCurrent = 0f;
+
+                    if (mouseT <= ratedBurnTime)
+                    {
+                        mouseFailStart = 1f - Mathf.Pow(cycleReliabilityStart, mouseT / ratedBurnTime);
+                        mouseFailEnd = 1f - Mathf.Pow(cycleReliabilityEnd, mouseT / ratedBurnTime);
+                        if (hasCurrentData)
+                            mouseFailCurrent = 1f - Mathf.Pow(cycleReliabilityCurrent, mouseT / ratedBurnTime);
+                    }
+                    else
+                    {
+                        float survivalToRatedStart = cycleReliabilityStart;
+                        float integratedModifier = IntegrateCycleCurve(cycleCurve, ratedBurnTime, mouseT, 20);
+                        float additionalFailRate = baseRateStart * integratedModifier;
+                        mouseFailStart = Mathf.Clamp01(1f - (survivalToRatedStart * Mathf.Exp(-additionalFailRate)));
+
+                        float survivalToRatedEnd = cycleReliabilityEnd;
+                        additionalFailRate = baseRateEnd * integratedModifier;
+                        mouseFailEnd = Mathf.Clamp01(1f - (survivalToRatedEnd * Mathf.Exp(-additionalFailRate)));
+
+                        if (hasCurrentData)
+                        {
+                            float survivalToRatedCurrent = cycleReliabilityCurrent;
+                            additionalFailRate = baseRateCurrent * integratedModifier;
+                            mouseFailCurrent = Mathf.Clamp01(1f - (survivalToRatedCurrent * Mathf.Exp(-additionalFailRate)));
+                        }
+                    }
+
+                    // Apply cluster math to tooltip values
+                    if (clusterSize > 1)
+                    {
+                        mouseFailStart = 1f - Mathf.Pow(1f - mouseFailStart, clusterSize);
+                        mouseFailEnd = 1f - Mathf.Pow(1f - mouseFailEnd, clusterSize);
+                        if (hasCurrentData)
+                            mouseFailCurrent = 1f - Mathf.Pow(1f - mouseFailCurrent, clusterSize);
+                    }
+
+                    // Format time string
+                    float minutes = Mathf.Floor(mouseT / 60f);
+                    float seconds = mouseT % 60f;
+                    string timeStr = minutes > 0 ? $"{minutes:F0}m {seconds:F0}s" : $"{seconds:F1}s";
+
+                    // Color code the zone name based on zone type
+                    string zoneColor = "";
+                    if (mouseT <= 5f)
+                        zoneColor = "#6699CC"; // Blue for startup
+                    else if (mouseT <= ratedBurnTime + 5f)
+                        zoneColor = "#66DD66"; // Green for rated
+                    else if (hasTestedBurnTime && mouseT <= testedBurnTime)
+                        zoneColor = "#FFCC44"; // Yellow for tested overburn
+                    else if (mouseT <= max100xTime)
+                        zoneColor = "#FF6666"; // Red for severe overburn
+                    else
+                        zoneColor = "#CC2222"; // Dark red for maximum overburn
+
+                    // Build tooltip with color-coded values (valueColor already defined above)
+                    string orangeColor = "#FF8033"; // Match orange line (0 data)
+                    string blueColor = "#7DD9FF";   // Match lighter blue line (current data)
+                    string greenColor = "#4DE64D";  // Match green line (max data)
+
+                    tooltipText = $"<b><color={zoneColor}>{zoneName}</color></b>\n\n";
+                    tooltipText += $"At <color={valueColor}>{timeStr}</color>, this engine has a:\n\n";
+                    tooltipText += $"  <color={orangeColor}>{mouseFailStart * 100f:F2}%</color> chance to fail (0 data)\n";
+                    if (hasCurrentData)
+                        tooltipText += $"  <color={blueColor}>{mouseFailCurrent * 100f:F2}%</color> chance to fail (current data)\n";
+                    tooltipText += $"  <color={greenColor}>{mouseFailEnd * 100f:F2}%</color> chance to fail (max data)\n\n";
+                    tooltipText += $"Cycle modifier: <color={valueColor}>{cycleModifier:F2}×</color>";
+                }
+
+                // Store tooltip to draw last (after info panel) so it appears on top
+                string finalTooltipText = tooltipText;
+                Vector2 finalMousePos = mousePos;
+
+                // Draw info panel first
+                float ignitionReliabilityStart = 1f;
+                float ignitionReliabilityEnd = 1f;
+                configNode.TryGetValue("ignitionReliabilityStart", ref ignitionReliabilityStart);
+                configNode.TryGetValue("ignitionReliabilityEnd", ref ignitionReliabilityEnd);
+
+                // Calculate current ignition reliability
+                float ignitionReliabilityCurrent = hasCurrentData ? Mathf.Lerp(ignitionReliabilityStart, ignitionReliabilityEnd, dataPercentage) : 0f;
+
+                DrawFailureInfoPanel(infoRect, ratedBurnTime, testedBurnTime, hasTestedBurnTime,
+                    cycleReliabilityStart, cycleReliabilityEnd, ignitionReliabilityStart, ignitionReliabilityEnd,
+                    hasCurrentData, cycleReliabilityCurrent, ignitionReliabilityCurrent, dataPercentage, realDataPercentage);
+
+                // Draw tooltip last so it appears on top of everything
+                DrawChartTooltip(finalMousePos, finalTooltipText);
+            }
+            else
+            {
+                // No hover, just draw info panel
+                float ignitionReliabilityStart = 1f;
+                float ignitionReliabilityEnd = 1f;
+                configNode.TryGetValue("ignitionReliabilityStart", ref ignitionReliabilityStart);
+                configNode.TryGetValue("ignitionReliabilityEnd", ref ignitionReliabilityEnd);
+
+                // Calculate current ignition reliability
+                float ignitionReliabilityCurrent = hasCurrentData ? Mathf.Lerp(ignitionReliabilityStart, ignitionReliabilityEnd, dataPercentage) : 0f;
+
+                DrawFailureInfoPanel(infoRect, ratedBurnTime, testedBurnTime, hasTestedBurnTime,
+                    cycleReliabilityStart, cycleReliabilityEnd, ignitionReliabilityStart, ignitionReliabilityEnd,
+                    hasCurrentData, cycleReliabilityCurrent, ignitionReliabilityCurrent, dataPercentage, realDataPercentage);
+            }
+        }
+
+        private void DrawFailureInfoPanel(Rect rect, float ratedBurnTime, float testedBurnTime, bool hasTestedBurnTime,
+            float cycleReliabilityStart, float cycleReliabilityEnd, float ignitionReliabilityStart, float ignitionReliabilityEnd,
+            bool hasCurrentData, float cycleReliabilityCurrent, float ignitionReliabilityCurrent, float dataPercentage, float realDataPercentage)
+        {
+            // Draw background
+            if (Event.current.type == EventType.Repaint)
+            {
+                GUI.DrawTexture(rect, infoPanelBgTex);
+            }
+
+            // Calculate success probabilities (chance to complete the burn)
+            float ratedSuccessStart = cycleReliabilityStart * 100f;
+            float ratedSuccessEnd = cycleReliabilityEnd * 100f;
+            float ignitionSuccessStart = ignitionReliabilityStart * 100f;
+            float ignitionSuccessEnd = ignitionReliabilityEnd * 100f;
+
+            // Calculate tested burn success if available
+            float testedSuccessStart = 0f;
+            float testedSuccessEnd = 0f;
+            if (hasTestedBurnTime && testedBurnTime > ratedBurnTime)
+            {
+                // Use the cycle reliability for the full tested duration
+                float testedRatio = testedBurnTime / ratedBurnTime;
+                testedSuccessStart = Mathf.Pow(cycleReliabilityStart, testedRatio) * 100f;
+                testedSuccessEnd = Mathf.Pow(cycleReliabilityEnd, testedRatio) * 100f;
+            }
+
+            // Calculate current data success probabilities
+            float ratedSuccessCurrent = 0f;
+            float testedSuccessCurrent = 0f;
+            float ignitionSuccessCurrent = 0f;
+            if (hasCurrentData)
+            {
+                ratedSuccessCurrent = cycleReliabilityCurrent * 100f;
+                ignitionSuccessCurrent = ignitionReliabilityCurrent * 100f;
+                if (hasTestedBurnTime && testedBurnTime > ratedBurnTime)
+                {
+                    float testedRatio = testedBurnTime / ratedBurnTime;
+                    testedSuccessCurrent = Mathf.Pow(cycleReliabilityCurrent, testedRatio) * 100f;
+                }
+            }
+
+            // Apply cluster math: for N engines all succeeding = (singleSuccess)^N
+            if (clusterSize > 1)
+            {
+                // Convert from percentage to decimal, apply power, convert back
+                ignitionSuccessStart = Mathf.Pow(ignitionSuccessStart / 100f, clusterSize) * 100f;
+                ignitionSuccessEnd = Mathf.Pow(ignitionSuccessEnd / 100f, clusterSize) * 100f;
+                ratedSuccessStart = Mathf.Pow(ratedSuccessStart / 100f, clusterSize) * 100f;
+                ratedSuccessEnd = Mathf.Pow(ratedSuccessEnd / 100f, clusterSize) * 100f;
+                testedSuccessStart = Mathf.Pow(testedSuccessStart / 100f, clusterSize) * 100f;
+                testedSuccessEnd = Mathf.Pow(testedSuccessEnd / 100f, clusterSize) * 100f;
+
+                if (hasCurrentData)
+                {
+                    ignitionSuccessCurrent = Mathf.Pow(ignitionSuccessCurrent / 100f, clusterSize) * 100f;
+                    ratedSuccessCurrent = Mathf.Pow(ratedSuccessCurrent / 100f, clusterSize) * 100f;
+                    testedSuccessCurrent = Mathf.Pow(testedSuccessCurrent / 100f, clusterSize) * 100f;
+                }
+            }
+
+            // Style for rich text labels
+            var textStyle = new GUIStyle(GUI.skin.label)
+            {
+                fontSize = 13,
+                normal = { textColor = Color.white },
+                wordWrap = true,
+                richText = true,
+                padding = new RectOffset(8, 8, 2, 2)
+            };
+
+            var headerStyle = new GUIStyle(GUI.skin.label)
+            {
+                fontSize = 15,
+                fontStyle = FontStyle.Bold,
+                normal = { textColor = new Color(0.9f, 0.9f, 0.9f) },
+                wordWrap = true,
+                richText = true,
+                padding = new RectOffset(8, 8, 0, 4) // No top padding to align with chart title
+            };
+
+            var sectionStyle = new GUIStyle(GUI.skin.label)
+            {
+                fontSize = 14,
+                fontStyle = FontStyle.Bold,
+                normal = { textColor = new Color(1f, 0.5f, 0.2f) }, // Orange for 0 data
+                wordWrap = true,
+                richText = true,
+                padding = new RectOffset(8, 8, 4, 2)
+            };
+
+            // Color codes matching the chart lines
+            string orangeColor = "#FF8033"; // 0 data
+            string blueColor = "#7DD9FF";   // Current data (lighter blue)
+            string greenColor = "#4DE64D";  // Max data
+            string valueColor = "#88DDFF";  // Time values
+
+            // Start at same vertical position as chart title for alignment
+            float yPos = rect.y + 4;
+
+            // Title
+            GUI.Label(new Rect(rect.x, yPos, rect.width, 20), "Engine Reliability:", headerStyle);
+            yPos += 24;
+
+            // === 0 DATA SECTION (Orange) ===
+            sectionStyle.normal.textColor = new Color(1f, 0.5f, 0.2f);
+            GUI.Label(new Rect(rect.x, yPos, rect.width, 18), "At 0 Data:", sectionStyle);
+            yPos += 20;
+
+            // Build narrative text for 0 data
+            string engineText = clusterSize > 1 ? $"A cluster of <color={valueColor}>{clusterSize}</color> engines" : "This engine";
+            string text0Data = $"{engineText} has a <color={orangeColor}>{ignitionSuccessStart:F1}%</color> chance for all to ignite, ";
+            text0Data += $"then a <color={orangeColor}>{ratedSuccessStart:F1}%</color> chance for all to burn for <color={valueColor}>{ratedBurnTime:F0}s</color> (rated)";
+            if (hasTestedBurnTime)
+                text0Data += $", and a <color={orangeColor}>{testedSuccessStart:F1}%</color> chance for all to burn to <color={valueColor}>{testedBurnTime:F0}s</color> (tested)";
+            text0Data += ".";
+
+            float height0 = textStyle.CalcHeight(new GUIContent(text0Data), rect.width);
+            GUI.Label(new Rect(rect.x, yPos, rect.width, height0), text0Data, textStyle);
+            yPos += height0 + 8;
+
+            // === CURRENT DATA SECTION (Blue) - only if available ===
+            if (hasCurrentData)
+            {
+                sectionStyle.normal.textColor = new Color(0.49f, 0.85f, 1.0f); // Lighter blue to match line
+                GUI.Label(new Rect(rect.x, yPos, rect.width, 18), $"At Current Data ({dataPercentage * 100f:F0}%):", sectionStyle);
+                yPos += 20;
+
+                // Build narrative text for current data
+                string textCurrentData = $"{engineText} has a <color={blueColor}>{ignitionSuccessCurrent:F1}%</color> chance for all to ignite, ";
+                textCurrentData += $"then a <color={blueColor}>{ratedSuccessCurrent:F1}%</color> chance for all to burn for <color={valueColor}>{ratedBurnTime:F0}s</color> (rated)";
+                if (hasTestedBurnTime)
+                    textCurrentData += $", and a <color={blueColor}>{testedSuccessCurrent:F1}%</color> chance for all to burn to <color={valueColor}>{testedBurnTime:F0}s</color> (tested)";
+                textCurrentData += ".";
+
+                float heightCurrent = textStyle.CalcHeight(new GUIContent(textCurrentData), rect.width);
+                GUI.Label(new Rect(rect.x, yPos, rect.width, heightCurrent), textCurrentData, textStyle);
+                yPos += heightCurrent + 8;
+            }
+
+            // === MAX DATA SECTION (Green) ===
+            sectionStyle.normal.textColor = new Color(0.3f, 0.9f, 0.3f);
+            GUI.Label(new Rect(rect.x, yPos, rect.width, 18), "At Max Data:", sectionStyle);
+            yPos += 20;
+
+            // Build narrative text for max data
+            string textMaxData = $"{engineText} has a <color={greenColor}>{ignitionSuccessEnd:F1}%</color> chance for all to ignite, ";
+            textMaxData += $"then a <color={greenColor}>{ratedSuccessEnd:F1}%</color> chance for all to burn for <color={valueColor}>{ratedBurnTime:F0}s</color> (rated)";
+            if (hasTestedBurnTime)
+                textMaxData += $", and a <color={greenColor}>{testedSuccessEnd:F1}%</color> chance for all to burn to <color={valueColor}>{testedBurnTime:F0}s</color> (tested)";
+            textMaxData += ".";
+
+            float heightMax = textStyle.CalcHeight(new GUIContent(textMaxData), rect.width);
+            GUI.Label(new Rect(rect.x, yPos, rect.width, heightMax), textMaxData, textStyle);
+            yPos += heightMax + 16;
+
+            // === SIMULATION CONTROLS ===
+            bool hasRealData = realDataPercentage >= 0f && realDataPercentage <= 1f;
+
+            var controlStyle = new GUIStyle(GUI.skin.label)
+            {
+                fontSize = 12,
+                normal = { textColor = new Color(0.8f, 0.8f, 0.8f) },
+                padding = new RectOffset(8, 8, 2, 2)
+            };
+
+            var sliderStyle = GUI.skin.horizontalSlider;
+            var thumbStyle = GUI.skin.horizontalSliderThumb;
+            var buttonStyle = new GUIStyle(GUI.skin.button) { fontSize = 11 };
+            var inputStyle = new GUIStyle(GUI.skin.textField) { fontSize = 11, alignment = TextAnchor.MiddleCenter };
+
+            // Separator line
+            if (Event.current.type == EventType.Repaint)
+            {
+                GUI.DrawTexture(new Rect(rect.x + 8, yPos, rect.width - 16, 1), chartSeparatorTex);
+            }
+            yPos += 6;
+
+            // === BUTTONS ROW: Log X, Log Y, Reset (3 side by side) ===
+            float btnWidth = (rect.width - 24) / 3f;
+            float btnSpacing = 4f;
+
+            // X-axis log scale toggle
+            string toggleLabelX = useLogScaleX ? "X: Lin" : "X: Log";
+            if (GUI.Button(new Rect(rect.x + 8, yPos, btnWidth, 20), toggleLabelX, buttonStyle))
+            {
+                useLogScaleX = !useLogScaleX;
+            }
+
+            // Y-axis log scale toggle
+            string toggleLabelY = useLogScaleY ? "Y: Lin" : "Y: Log";
+            if (GUI.Button(new Rect(rect.x + 8 + btnWidth + btnSpacing, yPos, btnWidth, 20), toggleLabelY, buttonStyle))
+            {
+                useLogScaleY = !useLogScaleY;
+            }
+
+            // Reset button
+            string resetButtonText = hasRealData ? $"{realDataPercentage * 100f:F0}%" : "0%";
+            if (GUI.Button(new Rect(rect.x + 8 + (btnWidth + btnSpacing) * 2, yPos, btnWidth, 20), resetButtonText, buttonStyle))
+            {
+                if (hasRealData)
+                {
+                    simulatedDataPercentage = realDataPercentage;
+                    dataPercentageInput = $"{realDataPercentage * 100f:F0}";
+                    useSimulatedData = false;
+                }
+                else
+                {
+                    simulatedDataPercentage = 0f;
+                    dataPercentageInput = "0";
+                    useSimulatedData = true;
+                }
+                clusterSize = 1;
+                clusterSizeInput = "1";
+            }
+
+            yPos += 26;
+
+            // === TWO SLIDERS SIDE BY SIDE ===
+            float halfWidth = (rect.width - 24) / 2f;
+            float leftX = rect.x;
+            float rightX = rect.x + halfWidth + 8;
+
+            // LEFT: DATA PERCENTAGE
+            GUI.Label(new Rect(leftX, yPos, halfWidth, 16), "Data %", controlStyle);
+            GUI.Label(new Rect(rightX, yPos, halfWidth, 16), "Cluster", controlStyle);
+            yPos += 16;
+
+            // Initialize simulated value to real data if not yet simulating
+            if (!useSimulatedData)
+            {
+                simulatedDataPercentage = hasRealData ? realDataPercentage : 0f;
+                dataPercentageInput = $"{simulatedDataPercentage * 100f:F0}";
+            }
+
+            // Data % slider
+            simulatedDataPercentage = GUI.HorizontalSlider(new Rect(leftX + 8, yPos, halfWidth - 60, 16),
+                simulatedDataPercentage * 100f, 0f, 100f, sliderStyle, thumbStyle) / 100f;
+
+            // Mark as simulated if user moved slider away from real data
+            if (hasRealData && Mathf.Abs(simulatedDataPercentage - realDataPercentage) > 0.001f)
+            {
+                useSimulatedData = true;
+            }
+            else if (!hasRealData && simulatedDataPercentage > 0.001f)
+            {
+                useSimulatedData = true;
+            }
+
+            // Data % input field
+            dataPercentageInput = $"{simulatedDataPercentage * 100f:F0}";
+            GUI.SetNextControlName("dataPercentInput");
+            string newDataInput = GUI.TextField(new Rect(leftX + halfWidth - 45, yPos - 2, 40, 20),
+                dataPercentageInput, 5, inputStyle);
+
+            if (newDataInput != dataPercentageInput)
+            {
+                dataPercentageInput = newDataInput;
+                if (GUI.GetNameOfFocusedControl() == "dataPercentInput" && float.TryParse(dataPercentageInput, out float inputDataPercent))
+                {
+                    inputDataPercent = Mathf.Clamp(inputDataPercent, 0f, 100f);
+                    simulatedDataPercentage = inputDataPercent / 100f;
+                    useSimulatedData = true;
+                }
+            }
+
+            // RIGHT: CLUSTER SIZE
+            // Cluster slider
+            clusterSize = Mathf.RoundToInt(GUI.HorizontalSlider(new Rect(rightX + 8, yPos, halfWidth - 60, 16),
+                clusterSize, 1f, 20f, sliderStyle, thumbStyle));
+
+            // Cluster input field
+            clusterSizeInput = clusterSize.ToString();
+            GUI.SetNextControlName("clusterSizeInput");
+            string newClusterInput = GUI.TextField(new Rect(rightX + halfWidth - 45, yPos - 2, 40, 20),
+                clusterSizeInput, 3, inputStyle);
+
+            if (newClusterInput != clusterSizeInput)
+            {
+                clusterSizeInput = newClusterInput;
+                if (GUI.GetNameOfFocusedControl() == "clusterSizeInput" && int.TryParse(clusterSizeInput, out int inputCluster))
+                {
+                    inputCluster = Mathf.Clamp(inputCluster, 1, 20);
+                    clusterSize = inputCluster;
+                    clusterSizeInput = clusterSize.ToString();
+                }
+            }
+        }
+
+        private void DrawLine(Vector2 start, Vector2 end, Texture2D texture, float width)
+        {
+            if (texture == null)
+                return;
+
+            Vector2 diff = end - start;
+            float angle = Mathf.Atan2(diff.y, diff.x) * Mathf.Rad2Deg;
+            float length = diff.magnitude;
+
+            Matrix4x4 matrixBackup = GUI.matrix;
+            try
+            {
+                GUIUtility.RotateAroundPivot(angle, start);
+                GUI.DrawTexture(new Rect(start.x, start.y - width / 2, length, width), texture);
+            }
+            finally
+            {
+                GUI.matrix = matrixBackup;
+            }
+        }
+
+        private void DrawCircle(Rect rect, Texture2D texture)
+        {
+            if (texture == null || Event.current.type != EventType.Repaint)
+                return;
+
+            // Draw circle by drawing a filled square with rounded appearance
+            // For simplicity, we'll draw concentric squares that approximate a circle
+            float centerX = rect.x + rect.width / 2f;
+            float centerY = rect.y + rect.height / 2f;
+            float radius = rect.width / 2f;
+
+            for (float r = radius; r > 0; r -= 0.5f)
+            {
+                float size = r * 2f;
+                GUI.DrawTexture(new Rect(centerX - r, centerY - r, size, size), texture);
+            }
+        }
+
+        private float RoundToNiceNumber(float value, bool roundUp)
+        {
+            if (value <= 0f) return 0f;
+
+            // Find the order of magnitude
+            float exponent = Mathf.Floor(Mathf.Log10(value));
+            float fraction = value / Mathf.Pow(10f, exponent);
+
+            // Round to 1, 2, or 5 times the magnitude
+            float niceFraction;
+            if (roundUp)
+            {
+                if (fraction <= 1f) niceFraction = 1f;
+                else if (fraction <= 2f) niceFraction = 2f;
+                else if (fraction <= 5f) niceFraction = 5f;
+                else niceFraction = 10f;
+            }
+            else
+            {
+                if (fraction < 1.5f) niceFraction = 1f;
+                else if (fraction < 3.5f) niceFraction = 2f;
+                else if (fraction < 7.5f) niceFraction = 5f;
+                else niceFraction = 10f;
+            }
+
+            return niceFraction * Mathf.Pow(10f, exponent);
+        }
+
+        private void DrawChartTooltip(Vector2 mousePos, string text)
+        {
+            if (string.IsNullOrEmpty(text)) return;
+
+            var tooltipStyle = new GUIStyle(GUI.skin.box)
+            {
+                fontSize = 15,
+                normal = { textColor = Color.white, background = chartTooltipBgTex },
+                padding = new RectOffset(8, 8, 6, 6),
+                alignment = TextAnchor.MiddleLeft,
+                wordWrap = false,
+                richText = true
+            };
+
+            GUIContent content = new GUIContent(text);
+            Vector2 size = tooltipStyle.CalcSize(content);
+
+            // Position tooltip offset from mouse, but keep it within screen bounds
+            float tooltipX = mousePos.x + 15;
+            float tooltipY = mousePos.y + 15;
+
+            // Adjust if tooltip would go off-screen
+            if (tooltipX + size.x > Screen.width)
+                tooltipX = mousePos.x - size.x - 5;
+            if (tooltipY + size.y > Screen.height)
+                tooltipY = mousePos.y - size.y - 5;
+
+            Rect tooltipRect = new Rect(tooltipX, tooltipY, size.x, size.y);
+            GUI.Box(tooltipRect, content, tooltipStyle);
         }
 
         virtual protected void DrawConfigSelectors(IEnumerable<ConfigNode> availableConfigNodes)
@@ -2479,7 +3778,7 @@ namespace RealFuels
                         plusStr = string.Empty;
                         if (cost > 0d)
                         {
-                            plusStr += cost.ToString("N0") + "f";
+                            plusStr += cost.ToString("N0") + "√";
                             autobuy = false;
                             canBuy = true;
                         }
@@ -2531,9 +3830,20 @@ namespace RealFuels
             GUILayout.Space(6); // Space before table
             DrawConfigSelectors(FilteredDisplayConfigs(false));
 
+            // Draw failure probability chart for current config
+            if (config != null)
+            {
+                GUILayout.Space(8);
+                DrawFailureProbabilityChart(config, guiWindowRect.width - 10, 360);
+            }
+
             DrawTechLevelSelector();
 
-            GUILayout.Space(-80); // Remove all bottom padding - window ends right at table
+            // Only use negative space if no chart (chart needs the room)
+            if (config == null || !config.HasValue("cycleReliabilityStart"))
+                GUILayout.Space(-80); // Remove all bottom padding - window ends right at table
+            else
+                GUILayout.Space(8); // Add space after chart
 
             if (!myToolTip.Equals(string.Empty) && GUI.tooltip.Equals(string.Empty))
             {
