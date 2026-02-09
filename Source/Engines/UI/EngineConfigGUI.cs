@@ -27,19 +27,21 @@ namespace RealFuels
         private static int lastConfigCount = 0;
         private static bool lastCompactView = false;
         private static bool lastHasChart = false;
+        private static bool lastShowBottomSection = true;
         private string myToolTip = string.Empty;
         private int counterTT;
         private bool editorLocked = false;
 
         private Vector2 configScrollPos = Vector2.zero;
         private GUIContent configGuiContent;
-        private bool compactView = false;
+        private static bool compactView = false;
         private bool useLogScaleX = false;
         private bool useLogScaleY = false;
+        private static bool showBottomSection = true;
 
         // Column visibility customization
         private bool showColumnMenu = false;
-        private static Rect columnMenuRect = new Rect(100, 100, 280, 650);
+        private static Rect columnMenuRect = new Rect(100, 100, 220, 400);
         private static bool[] columnsVisibleFull = new bool[18];
         private static bool[] columnsVisibleCompact = new bool[18];
         private static bool columnVisibilityInitialized = false;
@@ -55,8 +57,7 @@ namespace RealFuels
         private const int ConfigMaxVisibleRows = 16;
         private float[] ConfigColumnWidths = new float[18];
 
-        private int toolTipWidth => EditorLogic.fetch.editorScreen == EditorScreen.Parts ? 220 : 300;
-        private int toolTipHeight => (int)Styles.styleEditorTooltip.CalcHeight(new GUIContent(myToolTip), toolTipWidth);
+        private int toolTipWidth => EditorLogic.fetch.editorScreen == EditorScreen.Parts ? 320 : 380;
 
         public EngineConfigGUI(ModuleEngineConfigsBase module)
         {
@@ -112,7 +113,8 @@ namespace RealFuels
             bool contentChanged = currentPartId != lastPartId
                                || currentConfigCount != lastConfigCount
                                || compactView != lastCompactView
-                               || currentHasChart != lastHasChart;
+                               || currentHasChart != lastHasChart
+                               || showBottomSection != lastShowBottomSection;
 
             if (contentChanged)
             {
@@ -125,6 +127,7 @@ namespace RealFuels
                 lastConfigCount = currentConfigCount;
                 lastCompactView = compactView;
                 lastHasChart = currentHasChart;
+                lastShowBottomSection = showBottomSection;
             }
 
             mousePos = Input.mousePosition;
@@ -137,15 +140,23 @@ namespace RealFuels
             myToolTip = myToolTip.Trim();
             if (!string.IsNullOrEmpty(myToolTip))
             {
-                int offset = inPartsEditor ? -222 : 440;
-                GUI.Label(new Rect(guiWindowRect.xMin + offset, mousePos.y - 5, toolTipWidth, toolTipHeight), myToolTip, Styles.styleEditorTooltip);
+                int offset = inPartsEditor ? -330 : 440;
+                var tooltipStyle = new GUIStyle(EngineConfigStyles.ChartTooltip)
+                {
+                    fontSize = 13,
+                    wordWrap = true,
+                    normal = { background = _textures.ChartTooltipBg }
+                };
+                var content = new GUIContent(myToolTip);
+                float tooltipHeight = tooltipStyle.CalcHeight(content, toolTipWidth);
+                GUI.Box(new Rect(guiWindowRect.xMin + offset, mousePos.y - 5, toolTipWidth, tooltipHeight), myToolTip, tooltipStyle);
             }
 
             guiWindowRect = GUILayout.Window(unchecked((int)_module.part.persistentId), guiWindowRect, EngineManagerGUI, Localizer.Format("#RF_Engine_WindowTitle", _module.part.partInfo.title), Styles.styleEditorPanel);
 
             if (showColumnMenu)
             {
-                columnMenuRect = GUI.Window(unchecked((int)_module.part.persistentId) + 1, columnMenuRect, DrawColumnMenuWindow, "Settings", HighLogic.Skin.window);
+                columnMenuRect = GUI.Window(unchecked((int)_module.part.persistentId) + 1, columnMenuRect, DrawColumnMenuWindow, "Column Settings", Styles.styleEditorPanel);
             }
         }
 
@@ -156,50 +167,71 @@ namespace RealFuels
         private void EngineManagerGUI(int WindowID)
         {
             GUILayout.BeginVertical(GUILayout.ExpandHeight(false));
-            GUILayout.Space(4);
+            GUILayout.Space(6);
 
             GUILayout.BeginHorizontal();
-            GUILayout.Label(_module.EditorDescription);
+            var descStyle = new GUIStyle(GUI.skin.label) { padding = new RectOffset(0, 0, 0, 0), margin = new RectOffset(0, 0, 0, 0) };
+            GUILayout.Label(_module.EditorDescription, descStyle);
             GUILayout.FlexibleSpace();
             if (GUILayout.Button(compactView ? "Full View" : "Compact View", GUILayout.Width(100)))
             {
                 compactView = !compactView;
             }
+            if (GUILayout.Button(showBottomSection ? "Hide Chart" : "Show Chart", GUILayout.Width(85)))
+            {
+                showBottomSection = !showBottomSection;
+            }
             if (GUILayout.Button("Settings", GUILayout.Width(70)))
             {
                 showColumnMenu = !showColumnMenu;
             }
+            // Close button
+            var closeButtonStyle = new GUIStyle(GUI.skin.button)
+            {
+                normal = { textColor = new Color(1f, 0.4f, 0.4f) },
+                hover = { textColor = new Color(1f, 0.2f, 0.2f) },
+                fontStyle = FontStyle.Bold,
+                fontSize = 14
+            };
+            if (GUILayout.Button("✕", closeButtonStyle, GUILayout.Width(25)))
+            {
+                _module.CloseWindow();
+                return;
+            }
             GUILayout.EndHorizontal();
 
-            GUILayout.Space(4);
+            GUILayout.Space(7);
             DrawConfigSelectors(_module.FilteredDisplayConfigs(false));
 
-            if (_module.config != null && _module.config.HasValue("cycleReliabilityStart"))
+            if (showBottomSection)
             {
-                GUILayout.Space(6);
+                if (_module.config != null && _module.config.HasValue("cycleReliabilityStart"))
+                {
+                    GUILayout.Space(6);
 
-                Chart.UseLogScaleX = useLogScaleX;
-                Chart.UseLogScaleY = useLogScaleY;
-                Chart.UseSimulatedData = useSimulatedData;
-                Chart.SimulatedDataValue = simulatedDataValue;
-                Chart.ClusterSize = clusterSize;
-                Chart.ClusterSizeInput = clusterSizeInput;
-                Chart.DataValueInput = dataValueInput;
+                    Chart.UseLogScaleX = useLogScaleX;
+                    Chart.UseLogScaleY = useLogScaleY;
+                    Chart.UseSimulatedData = useSimulatedData;
+                    Chart.SimulatedDataValue = simulatedDataValue;
+                    Chart.ClusterSize = clusterSize;
+                    Chart.ClusterSizeInput = clusterSizeInput;
+                    Chart.DataValueInput = dataValueInput;
 
-                Chart.Draw(_module.config, guiWindowRect.width - 10, 360);
+                    Chart.Draw(_module.config, guiWindowRect.width - 10, 375);
 
-                useLogScaleX = Chart.UseLogScaleX;
-                useLogScaleY = Chart.UseLogScaleY;
-                useSimulatedData = Chart.UseSimulatedData;
-                simulatedDataValue = Chart.SimulatedDataValue;
-                clusterSize = Chart.ClusterSize;
-                clusterSizeInput = Chart.ClusterSizeInput;
-                dataValueInput = Chart.DataValueInput;
+                    useLogScaleX = Chart.UseLogScaleX;
+                    useLogScaleY = Chart.UseLogScaleY;
+                    useSimulatedData = Chart.UseSimulatedData;
+                    simulatedDataValue = Chart.SimulatedDataValue;
+                    clusterSize = Chart.ClusterSize;
+                    clusterSizeInput = Chart.ClusterSizeInput;
+                    dataValueInput = Chart.DataValueInput;
 
-                GUILayout.Space(6);
+                    GUILayout.Space(6);
+                }
+
+                _techLevels.DrawTechLevelSelector();
             }
-
-            _techLevels.DrawTechLevelSelector();
 
             GUILayout.Space(4);
             GUILayout.EndVertical();
@@ -227,6 +259,20 @@ namespace RealFuels
 
         private void DrawColumnMenuWindow(int windowID)
         {
+            // Close button in top right
+            var closeButtonStyle = new GUIStyle(GUI.skin.button)
+            {
+                normal = { textColor = new Color(1f, 0.4f, 0.4f) },
+                hover = { textColor = new Color(1f, 0.2f, 0.2f) },
+                fontStyle = FontStyle.Bold,
+                fontSize = 14
+            };
+            if (GUI.Button(new Rect(columnMenuRect.width - 29, 4, 25, 20), "✕", closeButtonStyle))
+            {
+                showColumnMenu = false;
+                return;
+            }
+
             DrawColumnMenu(new Rect(0, 20, columnMenuRect.width, columnMenuRect.height - 20));
             GUI.DragWindow(new Rect(0, 0, columnMenuRect.width, 20));
         }
@@ -260,7 +306,12 @@ namespace RealFuels
 
             float requiredWindowWidth = totalWidth + 10f;
             const float minWindowWidth = 900f;
-            guiWindowRect.width = Mathf.Max(requiredWindowWidth, minWindowWidth);
+            const float minWindowWidthCompact = 550f;
+            // Only enforce full minimum width when bottom section is visible (chart needs the width)
+            // Use smaller minimum for compact view
+            guiWindowRect.width = showBottomSection
+                ? Mathf.Max(requiredWindowWidth, minWindowWidth)
+                : Mathf.Max(requiredWindowWidth, minWindowWidthCompact);
 
             Rect headerRowRect = GUILayoutUtility.GetRect(GUIContent.none, GUI.skin.label, GUILayout.Height(45));
             float headerStartX = headerRowRect.x;
@@ -422,7 +473,7 @@ namespace RealFuels
 
         private void DrawActionCell(Rect rect, ConfigNode node, bool isSelected, Action apply)
         {
-            GUIStyle smallButtonStyle = EngineConfigStyles.SmallButton;
+            GUIStyle smallButtonStyle = GUI.skin.button;
 
             string configName = node.GetValue("name");
             bool canUse = EngineConfigTechLevels.CanConfig(node);
@@ -450,7 +501,7 @@ namespace RealFuels
             if (cost > 0)
                 purchaseLabel = unlocked ? "Owned" : $"Buy ({cost:N0}√)";
             else
-                purchaseLabel = "Free";
+                purchaseLabel = unlocked ? "Owned" : "Free";
 
             if (GUI.Button(purchaseRect, purchaseLabel, smallButtonStyle))
             {
@@ -490,56 +541,50 @@ namespace RealFuels
                 "Tech", "Cost", "Actions"
             };
 
-            float yPos = menuRect.y + 10;
-            float leftX = menuRect.x + 10;
+            float yPos = menuRect.y + 5;
+            float leftX = menuRect.x + 8;
 
-            GUIStyle headerStyle = EngineConfigStyles.MenuHeader;
-            GUIStyle labelStyle = EngineConfigStyles.MenuLabel;
-
-            GUI.Label(new Rect(leftX, yPos, menuRect.width - 20, 20), "Column Visibility", headerStyle);
-            yPos += 25;
-
-            if (Event.current.type == EventType.Repaint)
+            GUIStyle headerStyle = new GUIStyle(GUI.skin.label)
             {
-                Texture2D separatorTex = Styles.CreateColorPixel(new Color(0.3f, 0.3f, 0.3f, 0.5f));
-                GUI.DrawTexture(new Rect(leftX, yPos, menuRect.width - 20, 1), separatorTex);
-            }
-            yPos += 10;
+                fontSize = 11,
+                fontStyle = FontStyle.Bold,
+                normal = { textColor = new Color(0.9f, 0.9f, 0.9f) }
+            };
+            GUIStyle labelStyle = new GUIStyle(GUI.skin.label)
+            {
+                fontSize = 11,
+                normal = { textColor = new Color(0.85f, 0.85f, 0.85f) }
+            };
 
-            GUI.Label(new Rect(leftX + 100, yPos, 60, 20), "Full", headerStyle);
-            GUI.Label(new Rect(leftX + 170, yPos, 60, 20), "Compact", headerStyle);
-            yPos += 25;
+            GUI.Label(new Rect(leftX + 80, yPos, 50, 16), "Full", headerStyle);
+            GUI.Label(new Rect(leftX + 135, yPos, 60, 16), "Compact", headerStyle);
+            yPos += 18;
 
-            Rect scrollRect = new Rect(leftX, yPos, menuRect.width - 20, menuRect.height - 80);
+            Rect scrollRect = new Rect(leftX, yPos, menuRect.width - 16, menuRect.height - 28);
 
             GUI.BeginGroup(scrollRect);
             float itemY = 0;
 
             for (int i = 0; i < columnNames.Length; i++)
             {
-                GUI.Label(new Rect(5, itemY, 90, 20), columnNames[i], labelStyle);
+                GUI.Label(new Rect(0, itemY, 75, 18), columnNames[i], labelStyle);
 
-                bool newFullVisible = GUI.Toggle(new Rect(105, itemY, 20, 20), columnsVisibleFull[i], "");
+                bool newFullVisible = GUI.Toggle(new Rect(85, itemY + 1, 18, 18), columnsVisibleFull[i], "");
                 if (newFullVisible != columnsVisibleFull[i])
                 {
                     columnsVisibleFull[i] = newFullVisible;
                 }
 
-                bool newCompactVisible = GUI.Toggle(new Rect(175, itemY, 20, 20), columnsVisibleCompact[i], "");
+                bool newCompactVisible = GUI.Toggle(new Rect(140, itemY + 1, 18, 18), columnsVisibleCompact[i], "");
                 if (newCompactVisible != columnsVisibleCompact[i])
                 {
                     columnsVisibleCompact[i] = newCompactVisible;
                 }
 
-                itemY += 25;
+                itemY += 20;
             }
 
             GUI.EndGroup();
-
-            if (GUI.Button(new Rect(menuRect.x + menuRect.width - 60, menuRect.y + menuRect.height - 30, 50, 20), "Close"))
-            {
-                showColumnMenu = false;
-            }
         }
 
         private void InitializeColumnVisibility()
@@ -894,6 +939,12 @@ namespace RealFuels
         {
             List<string> tooltipParts = new List<string>();
 
+            // Color palette
+            string headerColor = "#FFA726";  // Orange
+            string propNameColor = "#7DD9FF"; // Cyan/Blue
+            string valueColor = "#E6D68A";    // Yellow/Gold
+            string unitColor = "#B0B0B0";     // Light gray
+
             if (node.HasValue("description"))
                 tooltipParts.Add(node.GetValue("description"));
 
@@ -931,7 +982,7 @@ namespace RealFuels
                     string name = propNode.GetValue("name");
                     if (string.IsNullOrWhiteSpace(name)) continue;
 
-                    string line = $"  • {name}";
+                    string line = $"  • <color={propNameColor}>{name}</color>";
 
                     string ratioStr2 = null;
                     if (propNode.TryGetValue("ratio", ref ratioStr2) && float.TryParse(ratioStr2, out float ratio) && totalMassFlow > 0f && totalRatio > 0f)
@@ -940,17 +991,22 @@ namespace RealFuels
 
                         var resource = PartResourceLibrary.Instance?.GetDefinition(name);
 
-                        string massFlowStr = propMassFlow >= 1f
-                            ? $"{propMassFlow:F2} kg/s"
-                            : $"{propMassFlow * 1000f:F1} g/s";
-
                         if (resource != null)
                         {
-                            float volumeFlow = propMassFlow / (float)resource.density;
-                            line += $": {volumeFlow:F2} L/s ({massFlowStr})";
+                            // resource.density is in t/unit, convert to kg/unit, then to units/s
+                            float volumeFlow = propMassFlow / (float)(resource.density * 1000f);
+                            line += $": <color={valueColor}>{volumeFlow:F2}</color> <color={unitColor}>units/s</color>";
+
+                            string massFlowStr = propMassFlow >= 1f
+                                ? $"{propMassFlow:F2} kg/s"
+                                : $"{propMassFlow * 1000f:F1} g/s";
+                            line += $" (<color={unitColor}>{massFlowStr}</color>)";
                         }
                         else
                         {
+                            string massFlowStr = propMassFlow >= 1f
+                                ? $"<color={valueColor}>{propMassFlow:F2}</color> <color={unitColor}>kg/s</color>"
+                                : $"<color={valueColor}>{propMassFlow * 1000f:F1}</color> <color={unitColor}>g/s</color>";
                             line += $": {massFlowStr}";
                         }
                     }
@@ -959,7 +1015,7 @@ namespace RealFuels
                 }
 
                 if (propellantLines.Count > 0)
-                    tooltipParts.Add($"<b>Propellant Consumption:</b>\n{string.Join("\n", propellantLines)}");
+                    tooltipParts.Add($"<b><color={headerColor}>Propellant Consumption:</color></b>\n{string.Join("\n", propellantLines)}");
             }
 
             return tooltipParts.Count > 0 ? string.Join("\n\n", tooltipParts) : string.Empty;

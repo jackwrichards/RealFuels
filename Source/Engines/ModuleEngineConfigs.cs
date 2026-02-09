@@ -1101,6 +1101,8 @@ namespace RealFuels
         [NonSerialized]
         public bool showRFGUI;
 
+        public static bool userClosedWindow = false;
+
         private void OnPartActionGuiDismiss(Part p)
         {
             if (p == part || p.isSymmetryCounterPart(part))
@@ -1109,7 +1111,7 @@ namespace RealFuels
 
         private void OnPartActionUIShown(UIPartActionWindow window, Part p)
         {
-            if (p == part)
+            if (p == part && !userClosedWindow)
                 showRFGUI = isMaster;
         }
 
@@ -1232,10 +1234,27 @@ namespace RealFuels
             // Actual rendering is handled by EngineConfigGUI table system
         }
 
+        private bool lastShowRFGUI = false;
+
         public void OnGUI()
         {
             if (isMaster && HighLogic.LoadedSceneIsEditor)
+            {
+                // If the user clicked the PAW button to show the GUI, clear the userClosedWindow flag
+                if (showRFGUI && !lastShowRFGUI)
+                {
+                    userClosedWindow = false;
+                }
+                lastShowRFGUI = showRFGUI;
+
                 GUI.OnGUI();
+            }
+        }
+
+        internal void CloseWindow()
+        {
+            showRFGUI = false;
+            userClosedWindow = true;
         }
 
 

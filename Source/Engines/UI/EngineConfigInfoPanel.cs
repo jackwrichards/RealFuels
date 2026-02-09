@@ -274,7 +274,7 @@ namespace RealFuels
             bool hasRealData = realCurrentData >= 0f && realMaxData > 0f;
 
             GUIStyle sectionStyle = EngineConfigStyles.InfoSection;
-            sectionStyle.normal.textColor = new Color(0.8f, 0.7f, 1.0f);
+            sectionStyle.normal.textColor = Color.white;
             GUI.Label(new Rect(x, yPos, width, 20), "Simulate:", sectionStyle);
             yPos += 24;
 
