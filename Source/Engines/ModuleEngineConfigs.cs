@@ -1460,11 +1460,11 @@ namespace RealFuels
         // Chart axis limit controls
         private bool useCustomAxisLimits = false; // Whether to use custom axis limits
         private float customMaxTime = 0f; // Custom max time for X axis
-        private float customMaxFailProb = 0f; // Custom max failure probability for Y axis (0-1 scale)
+        private float customMinSurvivalProb = 0f; // Custom min survival probability for Y axis (0-1 scale)
         private float autoMaxTime = 0f; // Auto-calculated max time (for reset)
-        private float autoMaxFailProb = 0f; // Auto-calculated max failure prob (for reset)
+        private float autoMinSurvivalProb = 0f; // Auto-calculated min survival prob (for reset)
         private string maxTimeInput = "0"; // Text input for max time
-        private string maxFailProbInput = "0"; // Text input for max failure prob
+        private string minSurvivalProbInput = "100"; // Text input for min survival prob
 
         private const int ConfigRowHeight = 22;
         private const int ConfigMaxVisibleRows = 16; // Max rows before scrolling (60% taller)
@@ -2883,24 +2883,49 @@ namespace RealFuels
         }
 
         /// <summary>
-        /// Convert failure probability to y-position on the chart, using either linear or logarithmic scale.
+        /// Formats time in seconds to a human-readable string in the format: xd xh xm xs
+        /// Omits zero values (e.g., "1h 30m" instead of "0d 1h 30m 0s")
         /// </summary>
-        private float FailureProbToYPosition(float failureProb, float yAxisMax, float plotY, float plotHeight, bool useLogScale)
+        private string FormatTime(float timeInSeconds)
+        {
+            if (timeInSeconds < 0.1f)
+                return "0s";
+
+            int totalSeconds = Mathf.RoundToInt(timeInSeconds);
+            int days = totalSeconds / 86400;
+            int hours = (totalSeconds % 86400) / 3600;
+            int minutes = (totalSeconds % 3600) / 60;
+            int seconds = totalSeconds % 60;
+
+            string result = "";
+            if (days > 0) result += $"{days}d ";
+            if (hours > 0) result += $"{hours}h ";
+            if (minutes > 0) result += $"{minutes}m ";
+            if (seconds > 0 || string.IsNullOrEmpty(result)) result += $"{seconds}s";
+
+            return result.TrimEnd();
+        }
+
+        /// <summary>
+        /// Convert survival probability to y-position on the chart, using either linear or logarithmic scale.
+        /// Higher survival appears higher on the chart (100% at top, 0% at bottom).
+        /// </summary>
+        private float SurvivalProbToYPosition(float survivalProb, float yAxisMin, float plotY, float plotHeight, bool useLogScale)
         {
             if (useLogScale)
             {
                 // Logarithmic scale: use log10(prob + 0.0001) to handle near-zero values
-                // The +0.0001 offset prevents log(0) and provides a visible baseline
-                float logProb = Mathf.Log10(failureProb + 0.0001f);
-                float logMax = Mathf.Log10(yAxisMax + 0.0001f);
-                float logMin = Mathf.Log10(0.0001f); // Minimum visible value
+                float logProb = Mathf.Log10(survivalProb + 0.0001f);
+                float logMax = Mathf.Log10(1f + 0.0001f); // Max is 100% survival
+                float logMin = Mathf.Log10(yAxisMin + 0.0001f);
                 float normalizedLog = (logProb - logMin) / (logMax - logMin);
                 return plotY + plotHeight - (normalizedLog * plotHeight);
             }
             else
             {
-                // Linear scale
-                return plotY + plotHeight - ((failureProb / yAxisMax) * plotHeight);
+                // Linear scale: map from yAxisMin (bottom) to 1.0 (top)
+                float normalizedSurvival = (survivalProb - yAxisMin) / (1f - yAxisMin);
+                return plotY + plotHeight - (normalizedSurvival * plotHeight);
             }
         }
 
@@ -3006,17 +3031,7 @@ namespace RealFuels
 
             // Extend max time to show the full cycle curve beyond where it reaches 100× modifier
             // The cycle curve reaches maximum at 2.5× (rated or tested), extend to 3.5× to see asymptotic behavior
-            autoMaxTime = hasTestedBurnTime ? testedBurnTime * 3.5f : ratedBurnTime * 3.5f;
-
-            // Use custom max time if enabled, otherwise use auto-calculated
-            float maxTime = useCustomAxisLimits ? customMaxTime : autoMaxTime;
-
-            // Initialize custom values if first time or reset
-            if (!useCustomAxisLimits || customMaxTime == 0f)
-            {
-                customMaxTime = autoMaxTime;
-                maxTimeInput = $"{customMaxTime:F0}";
-            }
+            float maxTime = hasTestedBurnTime ? testedBurnTime * 3.5f : ratedBurnTime * 3.5f;
 
             Rect chartRect = new Rect(containerRect.x, containerRect.y, chartWidth, height);
             Rect plotArea = new Rect(chartRect.x + padding, chartRect.y + padding, plotWidth, plotHeight);
@@ -3030,11 +3045,11 @@ namespace RealFuels
                 GUI.DrawTexture(chartRect, chartBgTex);
             }
 
-            // Calculate failure probabilities for both curves to determine Y-axis scale
+            // Calculate survival probabilities for both curves to determine Y-axis scale
             const int curvePoints = 100;
-            float[] failureProbsStart = new float[curvePoints];
-            float[] failureProbsEnd = new float[curvePoints];
-            float maxFailureProb = 0f;
+            float[] survivalProbsStart = new float[curvePoints];
+            float[] survivalProbsEnd = new float[curvePoints];
+            float minSurvivalProb = 1f;
 
             // Base failure rates (from reliability at rated burn time)
             float baseRateStart = -Mathf.Log(cycleReliabilityStart) / ratedBurnTime;
@@ -3044,19 +3059,19 @@ namespace RealFuels
             {
                 float t = (i / (float)(curvePoints - 1)) * maxTime;
 
-                // Calculate failure using TestFlight's cycle curve
+                // Calculate survival using TestFlight's cycle curve
                 // For t <= ratedBurnTime: standard exponential reliability
                 // For t > ratedBurnTime: integrate the cycle modifier to account for varying failure rate
 
                 // Calculate for start (0 data)
-                float failureProbStart = 0f;
+                float survivalProbStart = 0f;
                 if (t <= ratedBurnTime)
                 {
-                    failureProbStart = 1f - Mathf.Pow(cycleReliabilityStart, t / ratedBurnTime);
+                    survivalProbStart = Mathf.Pow(cycleReliabilityStart, t / ratedBurnTime);
                 }
                 else
                 {
-                    // Base failure up to rated time
+                    // Base survival up to rated time
                     float survivalToRated = cycleReliabilityStart;
 
                     // Integrate cycle modifier from ratedBurnTime to t using numerical integration
@@ -3066,21 +3081,20 @@ namespace RealFuels
                     float additionalFailRate = baseRateStart * integratedModifier;
 
                     // Total survival = survive to rated * survive additional time
-                    float survivalProb = survivalToRated * Mathf.Exp(-additionalFailRate);
-                    failureProbStart = Mathf.Clamp01(1f - survivalProb);
+                    survivalProbStart = Mathf.Clamp01(survivalToRated * Mathf.Exp(-additionalFailRate));
                 }
-                failureProbsStart[i] = failureProbStart;
-                maxFailureProb = Mathf.Max(maxFailureProb, failureProbStart);
+                survivalProbsStart[i] = survivalProbStart;
+                minSurvivalProb = Mathf.Min(minSurvivalProb, survivalProbStart);
 
                 // Calculate for end (max data)
-                float failureProbEnd = 0f;
+                float survivalProbEnd = 0f;
                 if (t <= ratedBurnTime)
                 {
-                    failureProbEnd = 1f - Mathf.Pow(cycleReliabilityEnd, t / ratedBurnTime);
+                    survivalProbEnd = Mathf.Pow(cycleReliabilityEnd, t / ratedBurnTime);
                 }
                 else
                 {
-                    // Base failure up to rated time
+                    // Base survival up to rated time
                     float survivalToRated = cycleReliabilityEnd;
 
                     // Integrate cycle modifier from ratedBurnTime to t
@@ -3090,11 +3104,10 @@ namespace RealFuels
                     float additionalFailRate = baseRateEnd * integratedModifier;
 
                     // Total survival = survive to rated * survive additional time
-                    float survivalProb = survivalToRated * Mathf.Exp(-additionalFailRate);
-                    failureProbEnd = Mathf.Clamp01(1f - survivalProb);
+                    survivalProbEnd = Mathf.Clamp01(survivalToRated * Mathf.Exp(-additionalFailRate));
                 }
-                failureProbsEnd[i] = failureProbEnd;
-                maxFailureProb = Mathf.Max(maxFailureProb, failureProbEnd);
+                survivalProbsEnd[i] = survivalProbEnd;
+                minSurvivalProb = Mathf.Min(minSurvivalProb, survivalProbEnd);
             }
 
             // Get current TestFlight data (or use simulated value)
@@ -3107,7 +3120,7 @@ namespace RealFuels
             float maxDataValue = realMaxData > 0f ? realMaxData : 10000f; // Default to 10000 if no TestFlight data
             float dataPercentage = (maxDataValue > 0f) ? Mathf.Clamp01(currentDataValue / maxDataValue) : 0f;
             bool hasCurrentData = (useSimulatedData && currentDataValue >= 0f) || (realCurrentData >= 0f && realMaxData > 0f);
-            float[] failureProbsCurrent = null;
+            float[] survivalProbsCurrent = null;
             float cycleReliabilityCurrent = 0f;
             float baseRateCurrent = 0f;
 
@@ -3116,74 +3129,57 @@ namespace RealFuels
                 // Use TestFlight's non-linear reliability curve to get current reliability
                 cycleReliabilityCurrent = EvaluateReliabilityAtData(currentDataValue, cycleReliabilityStart, cycleReliabilityEnd);
                 baseRateCurrent = -Mathf.Log(cycleReliabilityCurrent) / ratedBurnTime;
-                failureProbsCurrent = new float[curvePoints];
+                survivalProbsCurrent = new float[curvePoints];
 
                 for (int i = 0; i < curvePoints; i++)
                 {
                     float t = (i / (float)(curvePoints - 1)) * maxTime;
-                    float failureProbCurrent = 0f;
+                    float survivalProbCurrent = 0f;
 
                     if (t <= ratedBurnTime)
                     {
-                        failureProbCurrent = 1f - Mathf.Pow(cycleReliabilityCurrent, t / ratedBurnTime);
+                        survivalProbCurrent = Mathf.Pow(cycleReliabilityCurrent, t / ratedBurnTime);
                     }
                     else
                     {
                         float survivalToRated = cycleReliabilityCurrent;
                         float integratedModifier = IntegrateCycleCurve(cycleCurve, ratedBurnTime, t, 20);
                         float additionalFailRate = baseRateCurrent * integratedModifier;
-                        float survivalProb = survivalToRated * Mathf.Exp(-additionalFailRate);
-                        failureProbCurrent = Mathf.Clamp01(1f - survivalProb);
+                        survivalProbCurrent = Mathf.Clamp01(survivalToRated * Mathf.Exp(-additionalFailRate));
                     }
 
-                    failureProbsCurrent[i] = failureProbCurrent;
-                    maxFailureProb = Mathf.Max(maxFailureProb, failureProbCurrent);
+                    survivalProbsCurrent[i] = survivalProbCurrent;
+                    minSurvivalProb = Mathf.Min(minSurvivalProb, survivalProbCurrent);
                 }
             }
 
-            // Apply cluster math: for N engines, probability at least one fails = 1 - (1 - singleFailProb)^N
+            // Apply cluster math: for N engines, cluster survival = (single survival)^N
             if (clusterSize > 1)
             {
                 for (int i = 0; i < curvePoints; i++)
                 {
-                    // Transform each failure probability for cluster
-                    float singleSurvival = 1f - failureProbsStart[i];
-                    failureProbsStart[i] = 1f - Mathf.Pow(singleSurvival, clusterSize);
-
-                    singleSurvival = 1f - failureProbsEnd[i];
-                    failureProbsEnd[i] = 1f - Mathf.Pow(singleSurvival, clusterSize);
+                    // Transform each survival probability for cluster
+                    survivalProbsStart[i] = Mathf.Pow(survivalProbsStart[i], clusterSize);
+                    survivalProbsEnd[i] = Mathf.Pow(survivalProbsEnd[i], clusterSize);
 
                     if (hasCurrentData)
                     {
-                        singleSurvival = 1f - failureProbsCurrent[i];
-                        failureProbsCurrent[i] = 1f - Mathf.Pow(singleSurvival, clusterSize);
+                        survivalProbsCurrent[i] = Mathf.Pow(survivalProbsCurrent[i], clusterSize);
                     }
 
-                    // Update max failure probability after cluster transformation
-                    maxFailureProb = Mathf.Max(maxFailureProb, failureProbsStart[i]);
-                    maxFailureProb = Mathf.Max(maxFailureProb, failureProbsEnd[i]);
+                    // Update min survival probability after cluster transformation
+                    minSurvivalProb = Mathf.Min(minSurvivalProb, survivalProbsStart[i]);
+                    minSurvivalProb = Mathf.Min(minSurvivalProb, survivalProbsEnd[i]);
                     if (hasCurrentData)
-                        maxFailureProb = Mathf.Max(maxFailureProb, failureProbsCurrent[i]);
+                        minSurvivalProb = Mathf.Min(minSurvivalProb, survivalProbsCurrent[i]);
                 }
             }
 
-            // Set Y-axis max to 2% above the maximum failure probability
-            float yAxisMaxRaw = Mathf.Min(1f, maxFailureProb + 0.02f);
+            // Set Y-axis min to 2% below the minimum survival probability (but don't go below 0)
+            float yAxisMinRaw = Mathf.Max(0f, minSurvivalProb - 0.02f);
 
-            // Round up to a "nice" number for clean axis labels
-            autoMaxFailProb = RoundToNiceNumber(yAxisMaxRaw, true);
-            // Ensure minimum range for readability
-            if (autoMaxFailProb < 0.05f) autoMaxFailProb = 0.05f;
-
-            // Use custom max failure prob if enabled, otherwise use auto-calculated
-            float yAxisMax = useCustomAxisLimits ? customMaxFailProb : autoMaxFailProb;
-
-            // Initialize custom values if first time or reset
-            if (!useCustomAxisLimits || customMaxFailProb == 0f)
-            {
-                customMaxFailProb = autoMaxFailProb;
-                maxFailProbInput = $"{(customMaxFailProb * 100f):F1}";
-            }
+            // Round down to a "nice" number for clean axis labels
+            float yAxisMin = RoundToNiceNumber(yAxisMinRaw, false);
 
             // Draw grid lines and labels with dynamic scale
             var labelStyle = new GUIStyle(GUI.skin.label) { fontSize = 13, normal = { textColor = Color.grey } };
@@ -3192,16 +3188,16 @@ namespace RealFuels
             {
                 // Logarithmic Y-axis labels: 0.01%, 0.1%, 1%, 10%, 100%
                 float[] logValues = { 0.0001f, 0.001f, 0.01f, 0.1f, 1f }; // As fractions
-                foreach (float failureProb in logValues)
+                foreach (float survivalProb in logValues)
                 {
-                    if (failureProb > yAxisMax) break; // Don't show labels beyond max
+                    if (survivalProb < yAxisMin) continue; // Don't show labels below min
 
-                    float y = FailureProbToYPosition(failureProb, yAxisMax, plotArea.y, plotArea.height, useLogScaleY);
+                    float y = SurvivalProbToYPosition(survivalProb, yAxisMin, plotArea.y, plotArea.height, useLogScaleY);
                     Rect lineRect = new Rect(plotArea.x, y, plotArea.width, 1);
                     if (Event.current.type == EventType.Repaint)
                         GUI.DrawTexture(lineRect, chartGridMajorTex);
 
-                    float labelValue = failureProb * 100f;
+                    float labelValue = survivalProb * 100f;
                     string label = labelValue < 0.1f ? $"{labelValue:F3}%" : (labelValue < 1f ? $"{labelValue:F2}%" : (labelValue < 10f ? $"{labelValue:F1}%" : $"{labelValue:F0}%"));
                     GUI.Label(new Rect(plotArea.x - 35, y - 10, 30, 20), label, labelStyle);
                 }
@@ -3209,11 +3205,12 @@ namespace RealFuels
             else
             {
                 // Linear Y-axis: Major gridlines at 20% intervals, minor at 10%
-                // Draw all gridlines (major + minor)
+                // Draw all gridlines (major + minor) from yAxisMin to 100%
                 for (int i = 0; i <= 10; i++)
                 {
-                    bool isMajor = (i % 2 == 0); // Major gridlines at 0%, 20%, 40%, 60%, 80%, 100%
-                    float y = plotArea.y + plotArea.height - (i * plotArea.height / 10f);
+                    bool isMajor = (i % 2 == 0); // Major gridlines at yAxisMin%, ..., 100%
+                    float survivalProb = yAxisMin + (i / 10f) * (1f - yAxisMin);
+                    float y = SurvivalProbToYPosition(survivalProb, yAxisMin, plotArea.y, plotArea.height, useLogScaleY);
                     Rect lineRect = new Rect(plotArea.x, y, plotArea.width, 1);
 
                     if (Event.current.type == EventType.Repaint)
@@ -3225,7 +3222,7 @@ namespace RealFuels
                     // Only show labels on major gridlines
                     if (isMajor)
                     {
-                        float labelValue = (i / 10f) * yAxisMax * 100f;
+                        float labelValue = survivalProb * 100f;
                         string label = labelValue < 1f ? $"{labelValue:F2}%" : (labelValue < 10f ? $"{labelValue:F1}%" : $"{labelValue:F0}%");
                         GUI.Label(new Rect(plotArea.x - 35, y - 10, 30, 20), label, labelStyle);
                     }
@@ -3243,58 +3240,94 @@ namespace RealFuels
             float max100xTime = referenceBurnTime * 2.5f;
             float max100xX = TimeToXPosition(max100xTime, maxTime, plotArea.x, plotArea.width, useLogScaleX);
 
+            // Clamp all zone boundaries to plot area to prevent drawing outside
+            float plotAreaRight = plotArea.x + plotArea.width;
+            startupEndX = Mathf.Clamp(startupEndX, plotArea.x, plotAreaRight);
+            ratedCushionedX = Mathf.Clamp(ratedCushionedX, plotArea.x, plotAreaRight);
+            testedX = Mathf.Clamp(testedX, plotArea.x, plotAreaRight);
+            max100xX = Mathf.Clamp(max100xX, plotArea.x, plotAreaRight);
+
             if (Event.current.type == EventType.Repaint)
             {
                 // Zone 1: Startup (0-5s) - Dark blue (high initial risk)
-                GUI.DrawTexture(new Rect(plotArea.x, plotArea.y, startupEndX - plotArea.x, plotArea.height), chartStartupZoneTex);
+                float zone1Width = Mathf.Max(0, startupEndX - plotArea.x);
+                if (zone1Width > 0)
+                    GUI.DrawTexture(new Rect(plotArea.x, plotArea.y, zone1Width, plotArea.height), chartStartupZoneTex);
 
                 // Zone 2: Rated Operation (5s to ratedBurnTime+5) - Green (safe zone)
-                GUI.DrawTexture(new Rect(startupEndX, plotArea.y, ratedCushionedX - startupEndX, plotArea.height),
-                    chartGreenZoneTex);
+                float zone2Width = Mathf.Max(0, ratedCushionedX - startupEndX);
+                if (zone2Width > 0)
+                    GUI.DrawTexture(new Rect(startupEndX, plotArea.y, zone2Width, plotArea.height), chartGreenZoneTex);
 
                 if (hasTestedBurnTime)
                 {
                     // Zone 3: Tested Overburn (rated+5 to tested) - Yellow (reduced penalty overburn)
-                    GUI.DrawTexture(new Rect(ratedCushionedX, plotArea.y, testedX - ratedCushionedX, plotArea.height),
-                        chartYellowZoneTex);
+                    float zone3Width = Mathf.Max(0, testedX - ratedCushionedX);
+                    if (zone3Width > 0)
+                        GUI.DrawTexture(new Rect(ratedCushionedX, plotArea.y, zone3Width, plotArea.height), chartYellowZoneTex);
 
                     // Zone 4: Severe Overburn (tested to 100×) - Red (danger zone)
-                    GUI.DrawTexture(new Rect(testedX, plotArea.y, max100xX - testedX, plotArea.height),
-                        chartRedZoneTex);
+                    float zone4Width = Mathf.Max(0, max100xX - testedX);
+                    if (zone4Width > 0)
+                        GUI.DrawTexture(new Rect(testedX, plotArea.y, zone4Width, plotArea.height), chartRedZoneTex);
 
                     // Zone 5: Maximum Overburn (100× to end) - Darker red (nearly linear failure increase)
-                    GUI.DrawTexture(new Rect(max100xX, plotArea.y, plotArea.x + plotArea.width - max100xX, plotArea.height),
-                        chartDarkRedZoneTex);
+                    float zone5Width = Mathf.Max(0, plotAreaRight - max100xX);
+                    if (zone5Width > 0)
+                        GUI.DrawTexture(new Rect(max100xX, plotArea.y, zone5Width, plotArea.height), chartDarkRedZoneTex);
                 }
                 else
                 {
                     // Zone 3: Overburn (rated+5 to 100×) - Red (danger zone)
-                    GUI.DrawTexture(new Rect(ratedCushionedX, plotArea.y, max100xX - ratedCushionedX, plotArea.height),
-                        chartRedZoneTex);
+                    float zone3Width = Mathf.Max(0, max100xX - ratedCushionedX);
+                    if (zone3Width > 0)
+                        GUI.DrawTexture(new Rect(ratedCushionedX, plotArea.y, zone3Width, plotArea.height), chartRedZoneTex);
 
                     // Zone 4: Maximum Overburn (100× to end) - Darker red (nearly linear failure increase)
-                    GUI.DrawTexture(new Rect(max100xX, plotArea.y, plotArea.x + plotArea.width - max100xX, plotArea.height),
-                        chartDarkRedZoneTex);
+                    float zone4Width = Mathf.Max(0, plotAreaRight - max100xX);
+                    if (zone4Width > 0)
+                        GUI.DrawTexture(new Rect(max100xX, plotArea.y, zone4Width, plotArea.height), chartDarkRedZoneTex);
                 }
             }
 
-            // Draw vertical zone separators (thinner and less prominent)
+            // Check if mouse is hovering over any vertical separator for thick line rendering
+            Vector2 mousePos = Event.current.mousePosition;
+            bool mouseInPlot = plotArea.Contains(mousePos);
+            bool nearStartupMarker = mouseInPlot && Mathf.Abs(mousePos.x - startupEndX) < 8f;
+            bool nearRatedMarker = mouseInPlot && Mathf.Abs(mousePos.x - ratedCushionedX) < 8f;
+            bool nearTestedMarker = mouseInPlot && hasTestedBurnTime && Mathf.Abs(mousePos.x - testedX) < 8f;
+            bool near100xMarker = mouseInPlot && Mathf.Abs(mousePos.x - max100xX) < 8f;
+
+            // Draw vertical zone separators - only if within plot area, thicker when hovering
             if (Event.current.type == EventType.Repaint)
             {
                 // Startup zone end (5s) - Blue
-                GUI.DrawTexture(new Rect(startupEndX, plotArea.y, 1, plotArea.height), chartMarkerBlueTex);
+                if (startupEndX >= plotArea.x && startupEndX <= plotAreaRight)
+                {
+                    float lineWidth = nearStartupMarker ? 4f : 1f;
+                    GUI.DrawTexture(new Rect(startupEndX - lineWidth / 2f, plotArea.y, lineWidth, plotArea.height), chartMarkerBlueTex);
+                }
 
                 // Rated burn time (+ 5s cushion) - Green
-                GUI.DrawTexture(new Rect(ratedCushionedX, plotArea.y, 1, plotArea.height), chartMarkerGreenTex);
+                if (ratedCushionedX >= plotArea.x && ratedCushionedX <= plotAreaRight)
+                {
+                    float lineWidth = nearRatedMarker ? 4f : 1f;
+                    GUI.DrawTexture(new Rect(ratedCushionedX - lineWidth / 2f, plotArea.y, lineWidth, plotArea.height), chartMarkerGreenTex);
+                }
 
                 // Tested burn time (if present) - Yellow
-                if (hasTestedBurnTime)
+                if (hasTestedBurnTime && testedX >= plotArea.x && testedX <= plotAreaRight)
                 {
-                    GUI.DrawTexture(new Rect(testedX, plotArea.y, 1, plotArea.height), chartMarkerYellowTex);
+                    float lineWidth = nearTestedMarker ? 4f : 1f;
+                    GUI.DrawTexture(new Rect(testedX - lineWidth / 2f, plotArea.y, lineWidth, plotArea.height), chartMarkerYellowTex);
                 }
 
                 // 100× modifier point (maximum cycle penalty) - Dark Red
-                GUI.DrawTexture(new Rect(max100xX, plotArea.y, 1, plotArea.height), chartMarkerDarkRedTex);
+                if (max100xX >= plotArea.x && max100xX <= plotAreaRight)
+                {
+                    float lineWidth = near100xMarker ? 4f : 1f;
+                    GUI.DrawTexture(new Rect(max100xX - lineWidth / 2f, plotArea.y, lineWidth, plotArea.height), chartMarkerDarkRedTex);
+                }
             }
 
             // Now calculate point positions for all curves using the dynamic Y scale
@@ -3308,7 +3341,7 @@ namespace RealFuels
                 float x = TimeToXPosition(t, maxTime, plotArea.x, plotArea.width, useLogScaleX);
 
                 // Start curve (0 data) - orange
-                float yStart = FailureProbToYPosition(failureProbsStart[i], yAxisMax, plotArea.y, plotArea.height, useLogScaleY);
+                float yStart = SurvivalProbToYPosition(survivalProbsStart[i], yAxisMin, plotArea.y, plotArea.height, useLogScaleY);
                 if (float.IsNaN(x) || float.IsNaN(yStart) || float.IsInfinity(x) || float.IsInfinity(yStart))
                 {
                     x = plotArea.x;
@@ -3317,7 +3350,7 @@ namespace RealFuels
                 pointsStart[i] = new Vector2(x, yStart);
 
                 // End curve (max data) - green
-                float yEnd = FailureProbToYPosition(failureProbsEnd[i], yAxisMax, plotArea.y, plotArea.height, useLogScaleY);
+                float yEnd = SurvivalProbToYPosition(survivalProbsEnd[i], yAxisMin, plotArea.y, plotArea.height, useLogScaleY);
                 if (float.IsNaN(x) || float.IsNaN(yEnd) || float.IsInfinity(x) || float.IsInfinity(yEnd))
                 {
                     x = plotArea.x;
@@ -3328,7 +3361,7 @@ namespace RealFuels
                 // Current data curve - light blue
                 if (hasCurrentData)
                 {
-                    float yCurrent = FailureProbToYPosition(failureProbsCurrent[i], yAxisMax, plotArea.y, plotArea.height, useLogScaleY);
+                    float yCurrent = SurvivalProbToYPosition(survivalProbsCurrent[i], yAxisMin, plotArea.y, plotArea.height, useLogScaleY);
                     if (float.IsNaN(x) || float.IsNaN(yCurrent) || float.IsInfinity(x) || float.IsInfinity(yCurrent))
                     {
                         x = plotArea.x;
@@ -3338,18 +3371,30 @@ namespace RealFuels
                 }
             }
 
-            // Draw all curves
+            // Draw all curves (with clipping to plot area)
             if (Event.current.type == EventType.Repaint)
             {
                 // Draw start curve (0 data) in orange
                 for (int i = 0; i < pointsStart.Length - 1; i++)
                 {
+                    // Skip line segments outside the plot area
+                    if (pointsStart[i].x > plotArea.x + plotArea.width && pointsStart[i + 1].x > plotArea.x + plotArea.width)
+                        continue;
+                    if (pointsStart[i].x < plotArea.x && pointsStart[i + 1].x < plotArea.x)
+                        continue;
+
                     DrawLine(pointsStart[i], pointsStart[i + 1], chartOrangeLineTex, 2.5f);
                 }
 
                 // Draw end curve (max data) in green
                 for (int i = 0; i < pointsEnd.Length - 1; i++)
                 {
+                    // Skip line segments outside the plot area
+                    if (pointsEnd[i].x > plotArea.x + plotArea.width && pointsEnd[i + 1].x > plotArea.x + plotArea.width)
+                        continue;
+                    if (pointsEnd[i].x < plotArea.x && pointsEnd[i + 1].x < plotArea.x)
+                        continue;
+
                     DrawLine(pointsEnd[i], pointsEnd[i + 1], chartGreenLineTex, 2.5f);
                 }
 
@@ -3358,6 +3403,12 @@ namespace RealFuels
                 {
                     for (int i = 0; i < pointsCurrent.Length - 1; i++)
                     {
+                        // Skip line segments outside the plot area
+                        if (pointsCurrent[i].x > plotArea.x + plotArea.width && pointsCurrent[i + 1].x > plotArea.x + plotArea.width)
+                            continue;
+                        if (pointsCurrent[i].x < plotArea.x && pointsCurrent[i + 1].x < plotArea.x)
+                            continue;
+
                         DrawLine(pointsCurrent[i], pointsCurrent[i + 1], chartBlueLineTex, 2.5f);
                     }
                 }
@@ -3374,7 +3425,7 @@ namespace RealFuels
                 {
                     if (time > maxTime) break;
                     float x = TimeToXPosition(time, maxTime, plotArea.x, plotArea.width, useLogScaleX);
-                    string label = time < 60f ? $"{time:F0}s" : $"{time / 60:F0}m";
+                    string label = FormatTime(time);
                     GUI.Label(new Rect(x - 25, plotArea.y + plotArea.height + 2, 50, 20), label, timeStyle);
                 }
             }
@@ -3385,17 +3436,18 @@ namespace RealFuels
                 {
                     float time = (i / 4f) * maxTime;
                     float x = TimeToXPosition(time, maxTime, plotArea.x, plotArea.width, useLogScaleX);
-                    GUI.Label(new Rect(x - 25, plotArea.y + plotArea.height + 2, 50, 20), $"{time / 60:F0}m", timeStyle);
+                    GUI.Label(new Rect(x - 25, plotArea.y + plotArea.height + 2, 50, 20), FormatTime(time), timeStyle);
                 }
             }
 
             // Chart title
             var titleStyle = new GUIStyle(GUI.skin.label) { fontSize = 16, fontStyle = FontStyle.Bold, normal = { textColor = Color.white }, alignment = TextAnchor.MiddleCenter };
-            GUI.Label(new Rect(chartRect.x, chartRect.y + 4, chartWidth, 24), "Failure Probability vs Burn Time", titleStyle);
+            GUI.Label(new Rect(chartRect.x, chartRect.y + 4, chartWidth, 24), "Survival Probability vs Burn Time", titleStyle);
 
-            // Legend with colored circles
+            // Legend with colored circles (positioned at top right)
             var legendStyle = new GUIStyle(GUI.skin.label) { fontSize = 13, normal = { textColor = Color.white }, alignment = TextAnchor.UpperLeft };
-            float legendX = plotArea.x + 10;
+            float legendWidth = 110f; // Approximate width of legend items
+            float legendX = plotArea.x + plotArea.width - legendWidth;
             float legendY = plotArea.y + 5;
 
             // Orange circle and line for 0 data
@@ -3424,11 +3476,11 @@ namespace RealFuels
             }
 
             // Tooltip handling and hover line
-            Vector2 mousePos = Event.current.mousePosition;
-            if (plotArea.Contains(mousePos))
+            if (mouseInPlot)
             {
-                // Draw vertical hover line
-                if (Event.current.type == EventType.Repaint)
+                // Draw vertical hover line (but not when hovering over a marker)
+                bool hoveringAnyMarker = nearStartupMarker || nearRatedMarker || nearTestedMarker || near100xMarker;
+                if (Event.current.type == EventType.Repaint && !hoveringAnyMarker)
                 {
                     GUI.DrawTexture(new Rect(mousePos.x, plotArea.y, 1, plotArea.height), chartHoverLineTex);
                 }
@@ -3463,12 +3515,6 @@ namespace RealFuels
                 // Calculate cycle modifier at this time
                 float cycleModifier = cycleCurve.Evaluate(mouseT);
 
-                // Check if hovering near vertical markers for specific marker info
-                bool nearStartupMarker = Mathf.Abs(mousePos.x - startupEndX) < 8f;
-                bool nearRatedMarker = Mathf.Abs(mousePos.x - ratedCushionedX) < 8f;
-                bool nearTestedMarker = hasTestedBurnTime && Mathf.Abs(mousePos.x - testedX) < 8f;
-                bool near100xMarker = Mathf.Abs(mousePos.x - max100xX) < 8f;
-
                 string tooltipText = "";
                 string valueColor = "#E6D68A"; // Muted yellow for time values and numeric values
 
@@ -3478,68 +3524,63 @@ namespace RealFuels
                 }
                 else if (nearRatedMarker)
                 {
-                    float ratedMinutes = ratedBurnTime / 60f;
-                    string ratedTimeStr = ratedMinutes >= 1f ? $"{ratedMinutes:F1}m" : $"{ratedBurnTime:F0}s";
+                    string ratedTimeStr = FormatTime(ratedBurnTime);
                     tooltipText = $"<b><color=#66DD66>Rated Burn Time</color></b>\n\nThis engine is designed to run for <color={valueColor}>{ratedTimeStr}</color>.\nBeyond this point, overburn penalties increase failure risk.";
                 }
                 else if (nearTestedMarker)
                 {
-                    float testedMinutes = testedBurnTime / 60f;
-                    string testedTimeStr = testedMinutes >= 1f ? $"{testedMinutes:F1}m" : $"{testedBurnTime:F0}s";
+                    string testedTimeStr = FormatTime(testedBurnTime);
                     tooltipText = $"<b><color=#FFCC44>Tested Overburn Limit</color></b>\n\nThis engine was tested to <color={valueColor}>{testedTimeStr}</color> in real life.\nFailure risk reaches <color={valueColor}>{overburnPenalty:F1}×</color> at this point.\nBeyond here, risk increases rapidly toward certain failure.";
                 }
                 else if (near100xMarker)
                 {
-                    float max100xMinutes = max100xTime / 60f;
-                    string max100xTimeStr = max100xMinutes >= 1f ? $"{max100xMinutes:F1}m" : $"{max100xTime:F0}s";
+                    string max100xTimeStr = FormatTime(max100xTime);
                     tooltipText = $"<b><color=#CC2222>Maximum Cycle Penalty (100×)</color></b>\n\nAt <color={valueColor}>{max100xTimeStr}</color>, the failure rate multiplier reaches its maximum of <color={valueColor}>100×</color>.\n\nBeyond this point, it doesn't get much worse—failure probability increases nearly linearly with time.";
                 }
                 else
                 {
-                    // Calculate failure probabilities at mouse position
-                    float mouseFailStart = 0f;
-                    float mouseFailEnd = 0f;
-                    float mouseFailCurrent = 0f;
+                    // Calculate survival probabilities at mouse position
+                    float mouseSurviveStart = 0f;
+                    float mouseSurviveEnd = 0f;
+                    float mouseSurviveCurrent = 0f;
 
                     if (mouseT <= ratedBurnTime)
                     {
-                        mouseFailStart = 1f - Mathf.Pow(cycleReliabilityStart, mouseT / ratedBurnTime);
-                        mouseFailEnd = 1f - Mathf.Pow(cycleReliabilityEnd, mouseT / ratedBurnTime);
+                        mouseSurviveStart = Mathf.Pow(cycleReliabilityStart, mouseT / ratedBurnTime);
+                        mouseSurviveEnd = Mathf.Pow(cycleReliabilityEnd, mouseT / ratedBurnTime);
                         if (hasCurrentData)
-                            mouseFailCurrent = 1f - Mathf.Pow(cycleReliabilityCurrent, mouseT / ratedBurnTime);
+                            mouseSurviveCurrent = Mathf.Pow(cycleReliabilityCurrent, mouseT / ratedBurnTime);
                     }
                     else
                     {
                         float survivalToRatedStart = cycleReliabilityStart;
                         float integratedModifier = IntegrateCycleCurve(cycleCurve, ratedBurnTime, mouseT, 20);
                         float additionalFailRate = baseRateStart * integratedModifier;
-                        mouseFailStart = Mathf.Clamp01(1f - (survivalToRatedStart * Mathf.Exp(-additionalFailRate)));
+                        mouseSurviveStart = Mathf.Clamp01(survivalToRatedStart * Mathf.Exp(-additionalFailRate));
 
                         float survivalToRatedEnd = cycleReliabilityEnd;
                         additionalFailRate = baseRateEnd * integratedModifier;
-                        mouseFailEnd = Mathf.Clamp01(1f - (survivalToRatedEnd * Mathf.Exp(-additionalFailRate)));
+                        mouseSurviveEnd = Mathf.Clamp01(survivalToRatedEnd * Mathf.Exp(-additionalFailRate));
 
                         if (hasCurrentData)
                         {
                             float survivalToRatedCurrent = cycleReliabilityCurrent;
                             additionalFailRate = baseRateCurrent * integratedModifier;
-                            mouseFailCurrent = Mathf.Clamp01(1f - (survivalToRatedCurrent * Mathf.Exp(-additionalFailRate)));
+                            mouseSurviveCurrent = Mathf.Clamp01(survivalToRatedCurrent * Mathf.Exp(-additionalFailRate));
                         }
                     }
 
-                    // Apply cluster math to tooltip values
+                    // Apply cluster math to tooltip values (cluster survival = single^N)
                     if (clusterSize > 1)
                     {
-                        mouseFailStart = 1f - Mathf.Pow(1f - mouseFailStart, clusterSize);
-                        mouseFailEnd = 1f - Mathf.Pow(1f - mouseFailEnd, clusterSize);
+                        mouseSurviveStart = Mathf.Pow(mouseSurviveStart, clusterSize);
+                        mouseSurviveEnd = Mathf.Pow(mouseSurviveEnd, clusterSize);
                         if (hasCurrentData)
-                            mouseFailCurrent = 1f - Mathf.Pow(1f - mouseFailCurrent, clusterSize);
+                            mouseSurviveCurrent = Mathf.Pow(mouseSurviveCurrent, clusterSize);
                     }
 
                     // Format time string
-                    float minutes = Mathf.Floor(mouseT / 60f);
-                    float seconds = mouseT % 60f;
-                    string timeStr = minutes > 0 ? $"{minutes:F0}m {seconds:F0}s" : $"{seconds:F1}s";
+                    string timeStr = FormatTime(mouseT);
 
                     // Color code the zone name based on zone type
                     string zoneColor = "";
@@ -3554,40 +3595,23 @@ namespace RealFuels
                     else
                         zoneColor = "#CC2222"; // Dark red for maximum overburn
 
-                    // Build tooltip with color-coded values (valueColor already defined above)
+                    // Build simplified tooltip
                     string orangeColor = "#FF8033"; // Match orange line (0 data)
                     string blueColor = "#7DD9FF";   // Match lighter blue line (current data)
                     string greenColor = "#4DE64D";  // Match green line (max data)
 
-                    // Calculate failure and survival percentages
-                    float mouseFailStartPercent = mouseFailStart * 100f;
-                    float mouseFailEndPercent = mouseFailEnd * 100f;
-                    float mouseFailCurrentPercent = hasCurrentData ? mouseFailCurrent * 100f : 0f;
-
-                    float mouseSurviveStart = (1f - mouseFailStart) * 100f;
-                    float mouseSurviveEnd = (1f - mouseFailEnd) * 100f;
-                    float mouseSurviveCurrent = hasCurrentData ? (1f - mouseFailCurrent) * 100f : 0f;
+                    string entityName = clusterSize > 1 ? "cluster" : "engine";
 
                     tooltipText = $"<b><color={zoneColor}>{zoneName}</color></b>\n\n";
 
-                    // Format failure percentages in X%/X%/X% format
+                    // Show survival percentages in X%/X%/X% format
                     if (hasCurrentData)
                     {
-                        tooltipText += $"Failure chance: <color={orangeColor}>{mouseFailStartPercent:F2}%</color> / <color={blueColor}>{mouseFailCurrentPercent:F2}%</color> / <color={greenColor}>{mouseFailEndPercent:F2}%</color>\n";
+                        tooltipText += $"This {entityName} has a <color={orangeColor}>{mouseSurviveStart * 100f:F1}%</color> / <color={blueColor}>{mouseSurviveCurrent * 100f:F1}%</color> / <color={greenColor}>{mouseSurviveEnd * 100f:F1}%</color> chance to survive to <color={valueColor}>{timeStr}</color>\n\n";
                     }
                     else
                     {
-                        tooltipText += $"Failure chance: <color={orangeColor}>{mouseFailStartPercent:F2}%</color> / <color={greenColor}>{mouseFailEndPercent:F2}%</color>\n";
-                    }
-
-                    // Format survival percentages in X%/X%/X% format
-                    if (hasCurrentData)
-                    {
-                        tooltipText += $"This engine has a <color={orangeColor}>{mouseSurviveStart:F1}%</color> / <color={blueColor}>{mouseSurviveCurrent:F1}%</color> / <color={greenColor}>{mouseSurviveEnd:F1}%</color> chance to survive to <color={valueColor}>{timeStr}</color>\n\n";
-                    }
-                    else
-                    {
-                        tooltipText += $"This engine has a <color={orangeColor}>{mouseSurviveStart:F1}%</color> / <color={greenColor}>{mouseSurviveEnd:F1}%</color> chance to survive to <color={valueColor}>{timeStr}</color>\n\n";
+                        tooltipText += $"This {entityName} has a <color={orangeColor}>{mouseSurviveStart * 100f:F1}%</color> / <color={greenColor}>{mouseSurviveEnd * 100f:F1}%</color> chance to survive to <color={valueColor}>{timeStr}</color>\n\n";
                     }
 
                     tooltipText += $"Cycle modifier: <color={valueColor}>{cycleModifier:F2}×</color>";
@@ -3745,7 +3769,7 @@ namespace RealFuels
 
             sectionStyle.normal.textColor = Color.white; // Use white for base, colors come from rich text
             GUI.Label(new Rect(rect.x, yPos, rect.width, 20), headerText, sectionStyle);
-            yPos += 20;
+            yPos += 24;
 
             // Build single narrative with all values
             string engineText = clusterSize > 1 ? $"A cluster of <color={valueColor}>{clusterSize}</color> engines" : "This engine";
@@ -3766,7 +3790,7 @@ namespace RealFuels
             else
                 combinedText += $"<size=17><color={orangeColor}>{ratedSuccessStart:F1}%</color></size> / <size=17><color={greenColor}>{ratedSuccessEnd:F1}%</color></size>";
 
-            combinedText += $" chance{forAll} to burn for <color={valueColor}>{ratedBurnTime:F0}s</color> (rated)";
+            combinedText += $" chance{forAll} to burn for <color={valueColor}>{FormatTime(ratedBurnTime)}</color> (rated)";
 
             // Tested burn success rates (if applicable, with larger font for percentages)
             if (hasTestedBurnTime)
@@ -3777,7 +3801,7 @@ namespace RealFuels
                 else
                     combinedText += $"<size=17><color={orangeColor}>{testedSuccessStart:F1}%</color></size> / <size=17><color={greenColor}>{testedSuccessEnd:F1}%</color></size>";
 
-                combinedText += $" chance{forAll} to burn to <color={valueColor}>{testedBurnTime:F0}s</color> (tested)";
+                combinedText += $" chance{forAll} to burn to <color={valueColor}>{FormatTime(testedBurnTime)}</color> (tested)";
             }
             combinedText += ".";
 
@@ -3806,7 +3830,6 @@ namespace RealFuels
 
             // === LEFT COLUMN: DATA GAINS ===
             float leftYPos = columnStartY;
-            string infoColor = "#FFEE88"; // Light yellow
             string purpleColor = "#CCB3FF"; // Light purple - matches section header
 
             // Calculate data collection info
@@ -3817,9 +3840,9 @@ namespace RealFuels
             // Section header
             sectionStyle.normal.textColor = new Color(0.8f, 0.7f, 1.0f); // Light purple/lavender
             GUI.Label(new Rect(leftColumnX, leftYPos, leftColumnWidth, 20), "How To Gain Data:", sectionStyle);
-            leftYPos += 20;
+            leftYPos += 24;
 
-            // Bullet list
+            // Styles
             var bulletStyle = new GUIStyle(GUI.skin.label)
             {
                 fontSize = 14,
@@ -3829,23 +3852,51 @@ namespace RealFuels
                 padding = new RectOffset(8, 8, 1, 1)
             };
 
+            var indentedBulletStyle = new GUIStyle(bulletStyle)
+            {
+                padding = new RectOffset(24, 8, 1, 1)
+            };
+
+            var footerStyle = new GUIStyle(GUI.skin.label)
+            {
+                fontSize = 11,
+                normal = { textColor = new Color(0.6f, 0.6f, 0.6f) },
+                padding = new RectOffset(8, 8, 1, 1)
+            };
+
             float bulletHeight = 18;
 
-            // Full rated burn entry
-            string ratedBurnText = $"• Full rated burn (<color={valueColor}>{ratedBurnTime:F0}s</color>) gains <color={purpleColor}>{duPerFlight:F0}</color> du";
-            GUI.Label(new Rect(leftColumnX, leftYPos, leftColumnWidth, bulletHeight), ratedBurnText, bulletStyle);
+            // Failures section
+            GUI.Label(new Rect(leftColumnX, leftYPos, leftColumnWidth, bulletHeight), "An engine can fail in 5 ways:", bulletStyle);
             leftYPos += bulletHeight;
 
-            // Failure types
-            string[] failureTypes = { "Explode", "Shutdown", "Ignition Fail", "Perf. Loss", "Reduced Thrust" };
-            int[] failureDu = { 1300, 1100, 1050, 800, 700 };
+            // In-flight failures (based on weight distribution: total = 58)
+            // Values capped at 1000 du (per-flight max)
+            string[] failureTypes = { "Shutdown", "Perf. Loss", "Reduced Thrust", "Explode" };
+            int[] failureDu = { 1000, 800, 700, 1000 };
+            float[] failurePercents = { 55.2f, 27.6f, 13.8f, 3.4f }; // weights: 32, 16, 8, 2 out of 58
 
             for (int i = 0; i < failureTypes.Length; i++)
             {
-                string bulletText = $"• {failureTypes[i]} gains <color={purpleColor}>{failureDu[i]}</color> du";
-                GUI.Label(new Rect(leftColumnX, leftYPos, leftColumnWidth, bulletHeight), bulletText, bulletStyle);
+                string failText = $"  ({failurePercents[i]:F0}%) {failureTypes[i]} <color={purpleColor}>+{failureDu[i]}</color> du";
+                GUI.Label(new Rect(leftColumnX, leftYPos, leftColumnWidth, bulletHeight), failText, indentedBulletStyle);
                 leftYPos += bulletHeight;
             }
+
+            // Ignition failure (separate from cycle failures)
+            string ignitionText = $"  Ignition Fail <color={purpleColor}>+1000</color> du";
+            GUI.Label(new Rect(leftColumnX, leftYPos, leftColumnWidth, bulletHeight), ignitionText, indentedBulletStyle);
+            leftYPos += bulletHeight + 4;
+
+            // Running gains
+            string runningText = $"Running gains <color={purpleColor}>{dataRate:F1}</color> du/s";
+            GUI.Label(new Rect(leftColumnX, leftYPos, leftColumnWidth, bulletHeight), runningText, bulletStyle);
+            leftYPos += bulletHeight + 8;
+
+            // Footer note
+            string footerText = "(no more than 1000 du per flight)";
+            GUI.Label(new Rect(leftColumnX, leftYPos, leftColumnWidth, bulletHeight), footerText, footerStyle);
+            leftYPos += bulletHeight;
 
             leftColumnEndY = leftYPos + 8;
 
@@ -3908,13 +3959,6 @@ namespace RealFuels
                 // Reset cluster
                 clusterSize = 1;
                 clusterSizeInput = "1";
-
-                // Reset axis limits to auto
-                useCustomAxisLimits = false;
-                customMaxTime = autoMaxTime;
-                customMaxFailProb = autoMaxFailProb;
-                maxTimeInput = $"{customMaxTime:F0}";
-                maxFailProbInput = $"{(customMaxFailProb * 100f):F1}";
             }
             rightYPos += 24;
 
@@ -3989,68 +4033,54 @@ namespace RealFuels
             }
             rightYPos += 24;
 
-            // Max Time slider
-            GUI.Label(new Rect(rightColumnX + 8, rightYPos, btnWidth, 16), "Max Time (s)", controlStyle);
-            rightYPos += 16;
-
-            customMaxTime = GUI.HorizontalSlider(new Rect(rightColumnX + 8, rightYPos, btnWidth - 50, 16),
-                customMaxTime, 10f, autoMaxTime * 2f, sliderStyle, thumbStyle);
-
-            if (Mathf.Abs(customMaxTime - autoMaxTime) > 1f)
-                useCustomAxisLimits = true;
-
-            // Max Time input field
-            maxTimeInput = $"{customMaxTime:F0}";
-            GUI.SetNextControlName("maxTimeInput");
-            string newMaxTimeInput = GUI.TextField(new Rect(rightColumnX + btnWidth - 35, rightYPos - 2, 40, 20),
-                maxTimeInput, 6, inputStyle);
-
-            if (newMaxTimeInput != maxTimeInput)
-            {
-                maxTimeInput = newMaxTimeInput;
-                if (GUI.GetNameOfFocusedControl() == "maxTimeInput" && float.TryParse(maxTimeInput, out float inputMaxTime))
-                {
-                    inputMaxTime = Mathf.Clamp(inputMaxTime, 10f, autoMaxTime * 10f);
-                    customMaxTime = inputMaxTime;
-                    useCustomAxisLimits = true;
-                }
-            }
-            rightYPos += 24;
-
-            // Max Fail % slider
-            GUI.Label(new Rect(rightColumnX + 8, rightYPos, btnWidth, 16), "Max Fail %", controlStyle);
-            rightYPos += 16;
-
-            float customMaxFailPercent = customMaxFailProb * 100f;
-            customMaxFailPercent = GUI.HorizontalSlider(new Rect(rightColumnX + 8, rightYPos, btnWidth - 50, 16),
-                customMaxFailPercent, 1f, 100f, sliderStyle, thumbStyle);
-            customMaxFailProb = customMaxFailPercent / 100f;
-
-            if (Mathf.Abs(customMaxFailProb - autoMaxFailProb) > 0.01f)
-                useCustomAxisLimits = true;
-
-            // Max Fail % input field
-            maxFailProbInput = $"{customMaxFailPercent:F1}";
-            GUI.SetNextControlName("maxFailProbInput");
-            string newMaxFailInput = GUI.TextField(new Rect(rightColumnX + btnWidth - 35, rightYPos - 2, 40, 20),
-                maxFailProbInput, 5, inputStyle);
-
-            if (newMaxFailInput != maxFailProbInput)
-            {
-                maxFailProbInput = newMaxFailInput;
-                if (GUI.GetNameOfFocusedControl() == "maxFailProbInput" && float.TryParse(maxFailProbInput, out float inputMaxFail))
-                {
-                    inputMaxFail = Mathf.Clamp(inputMaxFail, 1f, 200f);
-                    customMaxFailProb = inputMaxFail / 100f;
-                    useCustomAxisLimits = true;
-                }
-            }
-            rightYPos += 24;
-
             rightColumnEndY = rightYPos;
 
-            // Use the taller column to determine the final height
+            // Draw vertical separator between columns
+            if (Event.current.type == EventType.Repaint)
+            {
+                float separatorX = rect.x + leftColumnWidth;
+                float separatorHeight = Mathf.Max(leftColumnEndY, rightColumnEndY) - columnStartY;
+                GUI.DrawTexture(new Rect(separatorX, columnStartY, 1, separatorHeight), chartSeparatorTex);
+            }
+
+            // Use the taller column to determine where to place bottom separator
             yPos = Mathf.Max(leftColumnEndY, rightColumnEndY) + 8;
+
+            // Draw horizontal separator
+            if (Event.current.type == EventType.Repaint)
+            {
+                GUI.DrawTexture(new Rect(rect.x + 8, yPos, rect.width - 16, 1), chartSeparatorTex);
+            }
+            yPos += 10;
+
+            // === FAILURE RATE SECTION ===
+            // Calculate failure rate based on current data slider value
+            float cycleReliabilityAtCurrentData = EvaluateReliabilityAtData(currentDataValue, cycleReliabilityStart, cycleReliabilityEnd);
+
+            // Apply cluster math if needed
+            if (clusterSize > 1)
+            {
+                cycleReliabilityAtCurrentData = Mathf.Pow(cycleReliabilityAtCurrentData, clusterSize);
+            }
+
+            float failureRate = 1f - cycleReliabilityAtCurrentData;
+            float oneInX = failureRate > 0.0001f ? (1f / failureRate) : 9999f;
+
+            // Display in large font
+            var failureRateStyle = new GUIStyle(GUI.skin.label)
+            {
+                fontSize = 18,
+                fontStyle = FontStyle.Bold,
+                normal = { textColor = Color.white },
+                alignment = TextAnchor.MiddleCenter,
+                richText = true
+            };
+
+            string failureRateColor = "#FF6666"; // Light red to emphasize the failure rate
+            string failureText = $"With <color={valueColor}>{currentDataValue:F0}</color> du, 1 in <color={failureRateColor}>{oneInX:F1}</color> rated burns will fail (<color={valueColor}>{FormatTime(ratedBurnTime)}</color>)";
+            float failureTextHeight = failureRateStyle.CalcHeight(new GUIContent(failureText), rect.width);
+            GUI.Label(new Rect(rect.x, yPos, rect.width, failureTextHeight), failureText, failureRateStyle);
+            yPos += failureTextHeight + 8;
         }
 
         private void DrawLine(Vector2 start, Vector2 end, Texture2D texture, float width)
