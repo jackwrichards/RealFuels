@@ -63,7 +63,23 @@ namespace RealFuels
             configNode.TryGetValue("ratedContinuousBurnTime", ref ratedContinuousBurnTime);
 
             // Skip chart if this is a cumulative-limited engine (continuous << total)
-            if (ratedContinuousBurnTime < ratedBurnTime * 0.9f) return;
+            if (ratedContinuousBurnTime < ratedBurnTime * 0.9f)
+            {
+                // Display error message for dual burn time configs
+                GUIStyle redCenteredStyle = new GUIStyle(GUI.skin.label)
+                {
+                    normal = { textColor = Color.red },
+                    alignment = TextAnchor.MiddleCenter,
+                    wordWrap = true
+                };
+
+                GUILayout.BeginVertical(GUILayout.Width(width), GUILayout.Height(height));
+                GUILayout.FlexibleSpace();
+                GUILayout.Label("Dual burn time configurations (continuous/cumulative)\nare not supported for reliability charts", redCenteredStyle);
+                GUILayout.FlexibleSpace();
+                GUILayout.EndVertical();
+                return;
+            }
 
             // Read testedBurnTime to match TestFlight's exact behavior
             float testedBurnTime = 0f;

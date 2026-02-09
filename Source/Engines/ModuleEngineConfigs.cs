@@ -1230,8 +1230,13 @@ namespace RealFuels
         /// </summary>
         internal void DrawSelectButton(ConfigNode node, bool isSelected, Action<string> applyCallback)
         {
-            // Hook point only - external mods (RP-1) patch this to track tech node context
-            // Actual rendering is handled by EngineConfigGUI table system
+            // Hook point for external mods (RP-1) to patch and track tech node context
+            // RP-1's Harmony prefix sets techNode here, and postfix clears it after this method returns
+            // So we must invoke the callback HERE, not after this returns, to keep techNode set
+            string configName = node?.GetValue("name") ?? "null";
+
+            // Invoke the callback while we're still inside this method (before RP-1's postfix clears techNode)
+            applyCallback?.Invoke(configName);
         }
 
         private bool lastShowRFGUI = false;

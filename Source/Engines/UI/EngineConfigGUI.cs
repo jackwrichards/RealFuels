@@ -2,6 +2,7 @@ using System;
 using System.Collections.Generic;
 using System.Globalization;
 using System.Linq;
+using System.Reflection;
 using UnityEngine;
 using KSP.Localization;
 using KSP.UI.Screens;
@@ -19,6 +20,14 @@ namespace RealFuels
         private readonly EngineConfigTechLevels _techLevels;
         private readonly EngineConfigTextures _textures;
         private EngineConfigChart _chart;
+
+        // RP-1 integration for credit display
+        private static bool _rp1Checked = false;
+        private static Type _unlockCreditHandlerType = null;
+        private static PropertyInfo _unlockCreditInstanceProperty = null;
+        private static PropertyInfo _totalCreditProperty = null;
+        private static double _cachedCredits = 0;
+        private static int _creditCacheFrame = -1;
 
         // GUI state
         private static Vector3 mousePos = Vector3.zero;
@@ -41,7 +50,7 @@ namespace RealFuels
 
         // Column visibility customization
         private bool showColumnMenu = false;
-        private static Rect columnMenuRect = new Rect(100, 100, 220, 400);
+        private static Rect columnMenuRect = new Rect(100, 100, 220, 500);
         private static bool[] columnsVisibleFull = new bool[18];
         private static bool[] columnsVisibleCompact = new bool[18];
         private static bool columnVisibilityInitialized = false;
@@ -138,25 +147,77 @@ namespace RealFuels
                 EditorUnlock();
 
             myToolTip = myToolTip.Trim();
-            if (!string.IsNullOrEmpty(myToolTip))
-            {
-                int offset = inPartsEditor ? -330 : 440;
-                var tooltipStyle = new GUIStyle(EngineConfigStyles.ChartTooltip)
-                {
-                    fontSize = 13,
-                    wordWrap = true,
-                    normal = { background = _textures.ChartTooltipBg }
-                };
-                var content = new GUIContent(myToolTip);
-                float tooltipHeight = tooltipStyle.CalcHeight(content, toolTipWidth);
-                GUI.Box(new Rect(guiWindowRect.xMin + offset, mousePos.y - 5, toolTipWidth, tooltipHeight), myToolTip, tooltipStyle);
-            }
 
             guiWindowRect = GUILayout.Window(unchecked((int)_module.part.persistentId), guiWindowRect, EngineManagerGUI, Localizer.Format("#RF_Engine_WindowTitle", _module.part.partInfo.title), Styles.styleEditorPanel);
 
             if (showColumnMenu)
             {
                 columnMenuRect = GUI.Window(unchecked((int)_module.part.persistentId) + 1, columnMenuRect, DrawColumnMenuWindow, "Column Settings", Styles.styleEditorPanel);
+            }
+
+            // Draw tooltip AFTER all windows to ensure it appears on top
+            if (!string.IsNullOrEmpty(myToolTip))
+            {
+                // Check if this is a button tooltip (marked with [BTN])
+                bool isButtonTooltip = myToolTip.StartsWith("[BTN]");
+                string displayText = isButtonTooltip ? myToolTip.Substring(5) : myToolTip;
+
+                var tooltipStyle = new GUIStyle(EngineConfigStyles.ChartTooltip)
+                {
+                    fontSize = 13,
+                    wordWrap = false,  // Disable word wrap for button tooltips to get natural width
+                    normal = { background = _textures.ChartTooltipBg }
+                };
+
+                var content = new GUIContent(displayText);
+
+                // Calculate dynamic width based on content
+                float actualTooltipWidth;
+                float tooltipHeight;
+
+                if (isButtonTooltip)
+                {
+                    // For button tooltips: use natural width of content with some padding
+                    Vector2 contentSize = tooltipStyle.CalcSize(content);
+                    actualTooltipWidth = Mathf.Min(contentSize.x + 20, 400); // Max 400px width
+                    tooltipStyle.wordWrap = actualTooltipWidth >= 400; // Enable wrap only if we hit max width
+                    tooltipHeight = tooltipStyle.CalcHeight(content, actualTooltipWidth);
+                }
+                else
+                {
+                    // For row tooltips: use fixed width with word wrap
+                    tooltipStyle.wordWrap = true;
+                    actualTooltipWidth = toolTipWidth;
+                    tooltipHeight = tooltipStyle.CalcHeight(content, actualTooltipWidth);
+                }
+
+                // Position button tooltips near cursor, row tooltips at fixed offset
+                float tooltipX, tooltipY;
+                if (isButtonTooltip)
+                {
+                    // Position near cursor: to the right and slightly down
+                    tooltipX = mousePos.x + 20;
+                    tooltipY = mousePos.y + 10;
+
+                    // Keep tooltip on screen
+                    if (tooltipX + actualTooltipWidth > Screen.width)
+                        tooltipX = mousePos.x - actualTooltipWidth - 10; // Show to the left instead
+                    if (tooltipY + tooltipHeight > Screen.height)
+                        tooltipY = Screen.height - tooltipHeight - 10;
+                }
+                else
+                {
+                    // Original positioning for row tooltips
+                    int offset = inPartsEditor ? -330 : 440;
+                    tooltipX = guiWindowRect.xMin + offset;
+                    tooltipY = mousePos.y - 5;
+                }
+
+                // Draw tooltip with higher depth (negative value = on top)
+                int oldDepth = GUI.depth;
+                GUI.depth = -1000;
+                GUI.Box(new Rect(tooltipX, tooltipY, actualTooltipWidth, tooltipHeight), displayText, tooltipStyle);
+                GUI.depth = oldDepth;
             }
         }
 
@@ -167,10 +228,15 @@ namespace RealFuels
         private void EngineManagerGUI(int WindowID)
         {
             GUILayout.BeginVertical(GUILayout.ExpandHeight(false));
-            GUILayout.Space(6);
+            GUILayout.Space(12); // Increased spacing to prevent overlap with window title
 
             GUILayout.BeginHorizontal();
-            var descStyle = new GUIStyle(GUI.skin.label) { padding = new RectOffset(0, 0, 0, 0), margin = new RectOffset(0, 0, 0, 0) };
+            var descStyle = new GUIStyle(GUI.skin.label)
+            {
+                padding = new RectOffset(0, 0, 0, 0),
+                margin = new RectOffset(0, 0, 0, 0),
+                normal = { textColor = Color.white } // Make description text white
+            };
             GUILayout.Label(_module.EditorDescription, descStyle);
             GUILayout.FlexibleSpace();
             if (GUILayout.Button(compactView ? "Full View" : "Compact View", GUILayout.Width(100)))
@@ -274,7 +340,7 @@ namespace RealFuels
             }
 
             DrawColumnMenu(new Rect(0, 20, columnMenuRect.width, columnMenuRect.height - 20));
-            GUI.DragWindow(new Rect(0, 0, columnMenuRect.width, 20));
+            GUI.DragWindow(); // Allow dragging from anywhere in the window
         }
 
         #endregion
@@ -358,8 +424,8 @@ namespace RealFuels
                 GUI.Label(tableRowRect, configGuiContent, GUIStyle.none);
 
                 // Call DrawSelectButton as a hook point for external mod compatibility (RP-1)
-                // This triggers Harmony patches but doesn't actually draw anything
-                _module.DrawSelectButton(row.Node, row.IsSelected, (_) => row.Apply());
+                // Pass null callback - we don't want to invoke anything during rendering, only during button clicks
+                _module.DrawSelectButton(row.Node, row.IsSelected, null);
 
                 DrawConfigRow(tableRowRect, row, isHovered, isLocked);
 
@@ -483,30 +549,66 @@ namespace RealFuels
             if (cost <= 0 && !unlocked && canUse)
                 EntryCostManager.Instance.PurchaseConfig(configName, node.GetValue("techRequired"));
 
-            float buttonWidth = rect.width / 2f - 2f;
-            Rect switchRect = new Rect(rect.x, rect.y, buttonWidth, rect.height);
-            Rect purchaseRect = new Rect(rect.x + buttonWidth + 4f, rect.y, buttonWidth, rect.height);
+            // Calculate button widths dynamically based on their labels
+            string switchLabel = isSelected ? "Active" : "Switch";
+            float switchWidth = smallButtonStyle.CalcSize(new GUIContent(switchLabel)).x + 10f; // Add padding
+
+            GUI.enabled = canUse && !unlocked && cost > 0;
+            string purchaseLabel;
+            string purchaseTooltip = string.Empty;
+
+            if (cost > 0)
+            {
+                // Check if we can use credits to reduce the cost
+                double displayCost = cost;
+                if (!unlocked && TryGetCreditAdjustedCost(cost, out double creditsAvailable, out double costAfterCredits))
+                {
+                    displayCost = costAfterCredits;
+                    double creditsUsed = cost - costAfterCredits;
+                    // Use special marker [BTN] so we can position this tooltip near cursor
+                    purchaseTooltip = $"[BTN]Entry Cost: {cost:N0}√\n" +
+                                    $"<color=#FFEB3B>Credits Available: {creditsAvailable:N0}</color>\n" +
+                                    $"<color=#FFEB3B>Credits Used: {creditsUsed:N0}</color>\n" +
+                                    $"<b>Final Cost: {costAfterCredits:N0}√</b>";
+                }
+
+                // Show final cost after credits on the button
+                purchaseLabel = unlocked ? "Owned" : $"Buy ({displayCost:N0}√)";
+            }
+            else
+                purchaseLabel = unlocked ? "Owned" : "Free";
+
+            float purchaseWidth = smallButtonStyle.CalcSize(new GUIContent(purchaseLabel)).x + 10f;
+
+            // Position buttons: Switch on left, Purchase on right
+            Rect switchRect = new Rect(rect.x, rect.y, switchWidth, rect.height);
+            Rect purchaseRect = new Rect(rect.x + switchWidth + 4f, rect.y, purchaseWidth, rect.height);
 
             GUI.enabled = !isSelected;
-            string switchLabel = isSelected ? "Active" : "Switch";
             if (GUI.Button(switchRect, switchLabel, smallButtonStyle))
             {
                 if (!unlocked && cost <= 0)
-                    EntryCostManager.Instance.PurchaseConfig(configName, node.GetValue("techRequired"));
+                {
+                    // Auto-purchase free configs using DrawSelectButton callback
+                    _module.DrawSelectButton(node, isSelected, (cfgName) =>
+                    {
+                        EntryCostManager.Instance.PurchaseConfig(cfgName, node.GetValue("techRequired"));
+                    });
+                }
                 apply?.Invoke();
             }
 
             GUI.enabled = canUse && !unlocked && cost > 0;
-            string purchaseLabel;
-            if (cost > 0)
-                purchaseLabel = unlocked ? "Owned" : $"Buy ({cost:N0}√)";
-            else
-                purchaseLabel = unlocked ? "Owned" : "Free";
-
-            if (GUI.Button(purchaseRect, purchaseLabel, smallButtonStyle))
+            if (GUI.Button(purchaseRect, new GUIContent(purchaseLabel, purchaseTooltip), smallButtonStyle))
             {
-                if (EntryCostManager.Instance.PurchaseConfig(configName, node.GetValue("techRequired")))
-                    apply?.Invoke();
+                // Call DrawSelectButton with PurchaseConfig as the callback
+                // This ensures PurchaseConfig runs INSIDE DrawSelectButton (before RP-1's postfix clears techNode)
+                // RP-1's Harmony patches: Prefix sets techNode -> DrawSelectButton body (with callback) -> Postfix clears techNode
+                _module.DrawSelectButton(node, isSelected, (cfgName) =>
+                {
+                    if (EntryCostManager.Instance.PurchaseConfig(cfgName, node.GetValue("techRequired")))
+                        apply?.Invoke();
+                });
             }
 
             GUI.enabled = true;
@@ -667,7 +769,43 @@ namespace RealFuels
                 }
             }
 
-            ConfigColumnWidths[17] = 160f;
+            // Calculate dynamic width for Actions column (index 17) based on button labels
+            float maxActionWidth = 0f;
+            var buttonStyle = GUI.skin.button;
+            foreach (var row in rows)
+            {
+                string configName = row.Node.GetValue("name");
+                bool unlocked = EngineConfigTechLevels.UnlockedConfig(row.Node, _module.part);
+                double cost = EntryCostManager.Instance.ConfigEntryCost(configName);
+
+                // Calculate Switch button width
+                string switchLabel = "Switch";
+                float switchWidth = buttonStyle.CalcSize(new GUIContent(switchLabel)).x;
+
+                // Calculate Purchase button width (can vary based on cost)
+                string purchaseLabel;
+                if (cost > 0)
+                {
+                    double displayCost = cost;
+                    // Check if credits would reduce the cost
+                    if (!unlocked && TryGetCreditAdjustedCost(cost, out _, out double costAfterCredits))
+                        displayCost = costAfterCredits;
+
+                    purchaseLabel = unlocked ? "Owned" : $"Buy ({displayCost:N0}√)";
+                }
+                else
+                {
+                    purchaseLabel = unlocked ? "Owned" : "Free";
+                }
+                float purchaseWidth = buttonStyle.CalcSize(new GUIContent(purchaseLabel)).x;
+
+                // Total width = both buttons + spacing between them
+                float totalWidth = switchWidth + purchaseWidth + 8f; // 4px spacing between buttons
+                if (totalWidth > maxActionWidth)
+                    maxActionWidth = totalWidth;
+            }
+
+            ConfigColumnWidths[17] = Mathf.Max(maxActionWidth, 160f); // Minimum 160px
             ConfigColumnWidths[7] = Mathf.Max(ConfigColumnWidths[7], 30f);
             ConfigColumnWidths[8] = Mathf.Max(ConfigColumnWidths[8], 30f);
             ConfigColumnWidths[9] = Mathf.Max(ConfigColumnWidths[9], 50f);
@@ -1019,6 +1157,81 @@ namespace RealFuels
             }
 
             return tooltipParts.Count > 0 ? string.Join("\n\n", tooltipParts) : string.Empty;
+        }
+
+        #endregion
+
+        #region RP-1 Credit Integration
+
+        private static void CheckRP1Integration()
+        {
+            if (_rp1Checked) return;
+            _rp1Checked = true;
+
+            try
+            {
+                // Try to find RP-1's UnlockCreditHandler
+                // Note: The assembly name is "RP-0" (with hyphen), not "RP0"
+                var rp1Assembly = AssemblyLoader.loadedAssemblies
+                    .FirstOrDefault(a => a.name == "RP-0");
+
+                if (rp1Assembly != null)
+                {
+                    _unlockCreditHandlerType = rp1Assembly.assembly.GetType("RP0.UnlockCreditHandler");
+                    if (_unlockCreditHandlerType != null)
+                    {
+                        _unlockCreditInstanceProperty = _unlockCreditHandlerType.GetProperty("Instance",
+                            System.Reflection.BindingFlags.Public | System.Reflection.BindingFlags.Static);
+                        _totalCreditProperty = _unlockCreditHandlerType.GetProperty("TotalCredit",
+                            System.Reflection.BindingFlags.Public | System.Reflection.BindingFlags.Instance);
+                    }
+                }
+            }
+            catch (Exception ex)
+            {
+                Debug.LogError($"[RealFuels] Failed to initialize RP-1 integration: {ex.Message}");
+            }
+        }
+
+        private static bool TryGetCreditAdjustedCost(double entryCost, out double creditsAvailable, out double costAfterCredits)
+        {
+            creditsAvailable = 0;
+            costAfterCredits = entryCost;
+
+            CheckRP1Integration();
+
+            if (_unlockCreditHandlerType == null || _unlockCreditInstanceProperty == null || _totalCreditProperty == null)
+                return false;
+
+            try
+            {
+                // Cache credits per frame to avoid expensive reflection calls every button render
+                int currentFrame = Time.frameCount;
+                if (_creditCacheFrame != currentFrame)
+                {
+                    var instance = _unlockCreditInstanceProperty.GetValue(null);
+                    if (instance != null)
+                    {
+                        _cachedCredits = (double)_totalCreditProperty.GetValue(instance);
+                        _creditCacheFrame = currentFrame;
+                    }
+                    else
+                    {
+                        return false;
+                    }
+                }
+
+                creditsAvailable = _cachedCredits;
+                double creditsUsed = Math.Min(creditsAvailable, entryCost);
+                costAfterCredits = entryCost - creditsUsed;
+                return creditsUsed > 0;
+            }
+            catch (Exception ex)
+            {
+                Debug.LogError($"[RealFuels] Failed to query RP-1 credits: {ex.Message}");
+            }
+
+            return false;
         }
 
         #endregion
