@@ -1,0 +1,1004 @@
+using System;
+using System.Collections.Generic;
+using System.Globalization;
+using System.Linq;
+using UnityEngine;
+using KSP.Localization;
+using KSP.UI.Screens;
+using RealFuels.TechLevels;
+
+namespace RealFuels
+{
+    /// <summary>
+    /// Handles all GUI rendering for ModuleEngineConfigs.
+    /// Manages the configuration selector window, column visibility, tooltips, and user interaction.
+    /// </summary>
+    public class EngineConfigGUI
+    {
+        private readonly ModuleEngineConfigsBase _module;
+        private readonly EngineConfigTechLevels _techLevels;
+        private readonly EngineConfigTextures _textures;
+        private EngineConfigChart _chart;
+
+        // GUI state
+        private static Vector3 mousePos = Vector3.zero;
+        private static Rect guiWindowRect = new Rect(0, 0, 0, 0);
+        private static uint lastPartId = 0;
+        private static int lastConfigCount = 0;
+        private static bool lastCompactView = false;
+        private static bool lastHasChart = false;
+        private string myToolTip = string.Empty;
+        private int counterTT;
+        private bool editorLocked = false;
+
+        private Vector2 configScrollPos = Vector2.zero;
+        private GUIContent configGuiContent;
+        private bool compactView = false;
+        private bool useLogScaleX = false;
+        private bool useLogScaleY = false;
+
+        // Column visibility customization
+        private bool showColumnMenu = false;
+        private static Rect columnMenuRect = new Rect(100, 100, 280, 650);
+        private static bool[] columnsVisibleFull = new bool[18];
+        private static bool[] columnsVisibleCompact = new bool[18];
+        private static bool columnVisibilityInitialized = false;
+
+        // Simulation controls
+        private bool useSimulatedData = false;
+        private float simulatedDataValue = 0f;
+        private int clusterSize = 1;
+        private string clusterSizeInput = "1";
+        private string dataValueInput = "0";
+
+        private const int ConfigRowHeight = 22;
+        private const int ConfigMaxVisibleRows = 16;
+        private float[] ConfigColumnWidths = new float[18];
+
+        private int toolTipWidth => EditorLogic.fetch.editorScreen == EditorScreen.Parts ? 220 : 300;
+        private int toolTipHeight => (int)Styles.styleEditorTooltip.CalcHeight(new GUIContent(myToolTip), toolTipWidth);
+
+        public EngineConfigGUI(ModuleEngineConfigsBase module)
+        {
+            _module = module;
+            _techLevels = new EngineConfigTechLevels(module);
+            _textures = EngineConfigTextures.Instance;
+        }
+
+        private EngineConfigChart Chart
+        {
+            get
+            {
+                if (_chart == null)
+                {
+                    _chart = new EngineConfigChart(_module);
+                    _chart.UseLogScaleX = useLogScaleX;
+                    _chart.UseLogScaleY = useLogScaleY;
+                    _chart.UseSimulatedData = useSimulatedData;
+                    _chart.SimulatedDataValue = simulatedDataValue;
+                    _chart.ClusterSize = clusterSize;
+                }
+                return _chart;
+            }
+        }
+
+        #region Main GUI Entry Point
+
+        public void OnGUI()
+        {
+            if (!_module.compatible || !_module.isMaster || !HighLogic.LoadedSceneIsEditor || EditorLogic.fetch == null)
+                return;
+
+            bool inPartsEditor = EditorLogic.fetch.editorScreen == EditorScreen.Parts;
+            if (!(_module.showRFGUI && inPartsEditor) && !(EditorLogic.fetch.editorScreen == EditorScreen.Actions && EditorActionGroups.Instance.GetSelectedParts().Contains(_module.part)))
+            {
+                EditorUnlock();
+                return;
+            }
+
+            if (inPartsEditor && _module.part.symmetryCounterparts.FirstOrDefault(p => p.persistentId < _module.part.persistentId) is Part)
+                return;
+
+            if (guiWindowRect.width == 0)
+            {
+                int posAdd = inPartsEditor ? 256 : 0;
+                int posMult = (_module.offsetGUIPos == -1) ? (_module.part.Modules.Contains("ModuleFuelTanks") ? 1 : 0) : _module.offsetGUIPos;
+                guiWindowRect = new Rect(posAdd + 430 * posMult, 365, 100, 100);
+            }
+
+            uint currentPartId = _module.part.persistentId;
+            int currentConfigCount = _module.FilteredDisplayConfigs(false).Count;
+            bool currentHasChart = _module.config != null && _module.config.HasValue("cycleReliabilityStart");
+            bool contentChanged = currentPartId != lastPartId
+                               || currentConfigCount != lastConfigCount
+                               || compactView != lastCompactView
+                               || currentHasChart != lastHasChart;
+
+            if (contentChanged)
+            {
+                float savedX = guiWindowRect.x;
+                float savedY = guiWindowRect.y;
+                float savedWidth = guiWindowRect.width;
+                guiWindowRect = new Rect(savedX, savedY, savedWidth, 100);
+
+                lastPartId = currentPartId;
+                lastConfigCount = currentConfigCount;
+                lastCompactView = compactView;
+                lastHasChart = currentHasChart;
+            }
+
+            mousePos = Input.mousePosition;
+            mousePos.y = Screen.height - mousePos.y;
+            if (guiWindowRect.Contains(mousePos))
+                EditorLock();
+            else
+                EditorUnlock();
+
+            myToolTip = myToolTip.Trim();
+            if (!string.IsNullOrEmpty(myToolTip))
+            {
+                int offset = inPartsEditor ? -222 : 440;
+                GUI.Label(new Rect(guiWindowRect.xMin + offset, mousePos.y - 5, toolTipWidth, toolTipHeight), myToolTip, Styles.styleEditorTooltip);
+            }
+
+            guiWindowRect = GUILayout.Window(unchecked((int)_module.part.persistentId), guiWindowRect, EngineManagerGUI, Localizer.Format("#RF_Engine_WindowTitle", _module.part.partInfo.title), Styles.styleEditorPanel);
+
+            if (showColumnMenu)
+            {
+                columnMenuRect = GUI.Window(unchecked((int)_module.part.persistentId) + 1, columnMenuRect, DrawColumnMenuWindow, "Settings", HighLogic.Skin.window);
+            }
+        }
+
+        #endregion
+
+        #region GUI Windows
+
+        private void EngineManagerGUI(int WindowID)
+        {
+            GUILayout.BeginVertical(GUILayout.ExpandHeight(false));
+            GUILayout.Space(4);
+
+            GUILayout.BeginHorizontal();
+            GUILayout.Label(_module.EditorDescription);
+            GUILayout.FlexibleSpace();
+            if (GUILayout.Button(compactView ? "Full View" : "Compact View", GUILayout.Width(100)))
+            {
+                compactView = !compactView;
+            }
+            if (GUILayout.Button("Settings", GUILayout.Width(70)))
+            {
+                showColumnMenu = !showColumnMenu;
+            }
+            GUILayout.EndHorizontal();
+
+            GUILayout.Space(4);
+            DrawConfigSelectors(_module.FilteredDisplayConfigs(false));
+
+            if (_module.config != null && _module.config.HasValue("cycleReliabilityStart"))
+            {
+                GUILayout.Space(6);
+
+                Chart.UseLogScaleX = useLogScaleX;
+                Chart.UseLogScaleY = useLogScaleY;
+                Chart.UseSimulatedData = useSimulatedData;
+                Chart.SimulatedDataValue = simulatedDataValue;
+                Chart.ClusterSize = clusterSize;
+                Chart.ClusterSizeInput = clusterSizeInput;
+                Chart.DataValueInput = dataValueInput;
+
+                Chart.Draw(_module.config, guiWindowRect.width - 10, 360);
+
+                useLogScaleX = Chart.UseLogScaleX;
+                useLogScaleY = Chart.UseLogScaleY;
+                useSimulatedData = Chart.UseSimulatedData;
+                simulatedDataValue = Chart.SimulatedDataValue;
+                clusterSize = Chart.ClusterSize;
+                clusterSizeInput = Chart.ClusterSizeInput;
+                dataValueInput = Chart.DataValueInput;
+
+                GUILayout.Space(6);
+            }
+
+            _techLevels.DrawTechLevelSelector();
+
+            GUILayout.Space(4);
+            GUILayout.EndVertical();
+
+            if (!myToolTip.Equals(string.Empty) && GUI.tooltip.Equals(string.Empty))
+            {
+                if (counterTT > 4)
+                {
+                    myToolTip = GUI.tooltip;
+                    counterTT = 0;
+                }
+                else
+                {
+                    counterTT++;
+                }
+            }
+            else
+            {
+                myToolTip = GUI.tooltip;
+                counterTT = 0;
+            }
+
+            GUI.DragWindow();
+        }
+
+        private void DrawColumnMenuWindow(int windowID)
+        {
+            DrawColumnMenu(new Rect(0, 20, columnMenuRect.width, columnMenuRect.height - 20));
+            GUI.DragWindow(new Rect(0, 0, columnMenuRect.width, 20));
+        }
+
+        #endregion
+
+        #region Config Table Drawing
+
+        protected void DrawConfigSelectors(IEnumerable<ConfigNode> availableConfigNodes)
+        {
+            // Allow derived module classes to add custom UI before the config table
+            _module.DrawConfigSelectors(availableConfigNodes);
+
+            // Then draw the standard config table
+            DrawConfigTable(_module.BuildConfigRows());
+        }
+
+        protected void DrawConfigTable(IEnumerable<ModuleEngineConfigsBase.ConfigRowDefinition> rows)
+        {
+            EnsureTexturesAndStyles();
+
+            var rowList = rows.ToList();
+            CalculateColumnWidths(rowList);
+
+            float totalWidth = 0f;
+            for (int i = 0; i < ConfigColumnWidths.Length; i++)
+            {
+                if (IsColumnVisible(i))
+                    totalWidth += ConfigColumnWidths[i];
+            }
+
+            float requiredWindowWidth = totalWidth + 10f;
+            const float minWindowWidth = 900f;
+            guiWindowRect.width = Mathf.Max(requiredWindowWidth, minWindowWidth);
+
+            Rect headerRowRect = GUILayoutUtility.GetRect(GUIContent.none, GUI.skin.label, GUILayout.Height(45));
+            float headerStartX = headerRowRect.x;
+            DrawHeaderRow(new Rect(headerStartX, headerRowRect.y, totalWidth, headerRowRect.height));
+
+            int actualRows = rowList.Count;
+            int visibleRows = Mathf.Min(actualRows, ConfigMaxVisibleRows);
+            int scrollViewHeight = visibleRows * ConfigRowHeight;
+
+            var scrollStyle = new GUIStyle(GUI.skin.scrollView) { padding = new RectOffset(0, 0, 0, 0) };
+            configScrollPos = GUILayout.BeginScrollView(configScrollPos, false, false, GUIStyle.none, GUI.skin.verticalScrollbar, scrollStyle, GUILayout.Height(scrollViewHeight));
+
+            var noSpaceStyle = new GUIStyle { margin = new RectOffset(0, 0, 0, 0), padding = new RectOffset(0, 0, 0, 0) };
+
+            int rowIndex = 0;
+            foreach (var row in rowList)
+            {
+                Rect rowRect = GUILayoutUtility.GetRect(GUIContent.none, noSpaceStyle, GUILayout.Height(ConfigRowHeight));
+                float rowStartX = rowRect.x;
+                Rect tableRowRect = new Rect(rowStartX, rowRect.y, totalWidth, rowRect.height);
+                bool isHovered = tableRowRect.Contains(Event.current.mousePosition);
+
+                bool isLocked = !EngineConfigTechLevels.CanConfig(row.Node);
+                if (Event.current.type == EventType.Repaint)
+                {
+                    if (!row.IsSelected && !isLocked && !isHovered && rowIndex % 2 == 1)
+                    {
+                        GUI.DrawTexture(tableRowRect, _textures.ZebraStripe);
+                    }
+
+                    if (row.IsSelected)
+                        GUI.DrawTexture(tableRowRect, _textures.RowCurrent);
+                    else if (isLocked)
+                        GUI.DrawTexture(tableRowRect, _textures.RowLocked);
+                    else if (isHovered)
+                        GUI.DrawTexture(tableRowRect, _textures.RowHover);
+                }
+
+                string tooltip = GetRowTooltip(row.Node);
+                if (configGuiContent == null)
+                    configGuiContent = new GUIContent();
+                configGuiContent.text = string.Empty;
+                configGuiContent.tooltip = tooltip;
+                GUI.Label(tableRowRect, configGuiContent, GUIStyle.none);
+
+                // Call DrawSelectButton as a hook point for external mod compatibility (RP-1)
+                // This triggers Harmony patches but doesn't actually draw anything
+                _module.DrawSelectButton(row.Node, row.IsSelected, (_) => row.Apply());
+
+                DrawConfigRow(tableRowRect, row, isHovered, isLocked);
+
+                if (Event.current.type == EventType.Repaint)
+                {
+                    DrawColumnSeparators(tableRowRect);
+                }
+
+                rowIndex++;
+            }
+
+            GUILayout.EndScrollView();
+        }
+
+        private void DrawHeaderRow(Rect headerRect)
+        {
+            float currentX = headerRect.x;
+            string[] headers = {
+                "Name", Localizer.GetStringByTag("#RF_EngineRF_Thrust"), "Min%",
+                Localizer.GetStringByTag("#RF_Engine_Isp"), Localizer.GetStringByTag("#RF_Engine_Enginemass"),
+                Localizer.GetStringByTag("#RF_Engine_TLTInfo_Gimbal"), Localizer.GetStringByTag("#RF_EngineRF_Ignitions"),
+                Localizer.GetStringByTag("#RF_Engine_ullage"), Localizer.GetStringByTag("#RF_Engine_pressureFed"),
+                "Rated (s)", "Tested (s)", "Ign No Data", "Ign Max Data", "Burn No Data", "Burn Max Data",
+                Localizer.GetStringByTag("#RF_Engine_Requires"), "Extra Cost", ""
+            };
+            string[] tooltips = {
+                "Configuration name", "Rated thrust", "Minimum throttle",
+                "Sea level and vacuum Isp", "Engine mass", "Gimbal range", "Ignitions",
+                "Ullage requirement", "Pressure-fed", "Rated burn time",
+                "Tested burn time (real-world test duration)",
+                "Ignition reliability at 0 data", "Ignition reliability at max data",
+                "Cycle reliability at 0 data", "Cycle reliability at max data",
+                "Required technology", "Extra cost for this config", "Switch and purchase actions"
+            };
+
+            for (int i = 0; i < headers.Length; i++)
+            {
+                if (IsColumnVisible(i))
+                {
+                    DrawHeaderCell(new Rect(currentX, headerRect.y, ConfigColumnWidths[i], headerRect.height), headers[i], tooltips[i]);
+                    currentX += ConfigColumnWidths[i];
+                }
+            }
+        }
+
+        private void DrawHeaderCell(Rect rect, string text, string tooltip)
+        {
+            bool hover = rect.Contains(Event.current.mousePosition);
+            GUIStyle headerStyle = hover ? EngineConfigStyles.HeaderCellHover : EngineConfigStyles.HeaderCell;
+
+            if (configGuiContent == null)
+                configGuiContent = new GUIContent();
+            configGuiContent.text = text;
+            configGuiContent.tooltip = tooltip;
+            Matrix4x4 matrixBackup = GUI.matrix;
+            float offsetX = rect.width / 2f;
+            Vector2 pivot = new Vector2(rect.x + offsetX, rect.y + rect.height + 4f);
+            GUIUtility.RotateAroundPivot(-45f, pivot);
+            GUI.Label(new Rect(rect.x + offsetX, rect.y + rect.height - 22f, 140f, 24f), configGuiContent, headerStyle);
+            GUI.matrix = matrixBackup;
+        }
+
+        private void DrawConfigRow(Rect rowRect, ModuleEngineConfigsBase.ConfigRowDefinition row, bool isHovered, bool isLocked)
+        {
+            GUIStyle primaryStyle;
+            if (isLocked)
+                primaryStyle = EngineConfigStyles.RowPrimaryLocked;
+            else if (isHovered)
+                primaryStyle = EngineConfigStyles.RowPrimaryHover;
+            else
+                primaryStyle = EngineConfigStyles.RowPrimary;
+
+            GUIStyle secondaryStyle = EngineConfigStyles.RowSecondary;
+
+            float currentX = rowRect.x;
+            string nameText = row.DisplayName;
+            if (row.Indent) nameText = "    ↳ " + nameText;
+
+            Action<int, string> drawCell = (index, text) =>
+            {
+                if (IsColumnVisible(index))
+                {
+                    GUI.Label(new Rect(currentX, rowRect.y, ConfigColumnWidths[index], rowRect.height), text, index == 0 ? primaryStyle : secondaryStyle);
+                    currentX += ConfigColumnWidths[index];
+                }
+            };
+
+            drawCell(0, nameText);
+            drawCell(1, GetThrustString(row.Node));
+            drawCell(2, GetMinThrottleString(row.Node));
+            drawCell(3, GetIspString(row.Node));
+            drawCell(4, GetMassString(row.Node));
+            drawCell(5, GetGimbalString(row.Node));
+            drawCell(6, GetIgnitionsString(row.Node));
+            drawCell(7, GetBoolSymbol(row.Node, "ullage"));
+            drawCell(8, GetBoolSymbol(row.Node, "pressureFed"));
+            drawCell(9, GetRatedBurnTimeString(row.Node));
+            drawCell(10, GetTestedBurnTimeString(row.Node));
+            drawCell(11, GetIgnitionReliabilityStartString(row.Node));
+            drawCell(12, GetIgnitionReliabilityEndString(row.Node));
+            drawCell(13, GetCycleReliabilityStartString(row.Node));
+            drawCell(14, GetCycleReliabilityEndString(row.Node));
+            drawCell(15, GetTechString(row.Node));
+            drawCell(16, GetCostDeltaString(row.Node));
+
+            if (IsColumnVisible(17))
+            {
+                DrawActionCell(new Rect(currentX, rowRect.y + 1, ConfigColumnWidths[17], rowRect.height - 2), row.Node, row.IsSelected, row.Apply);
+            }
+        }
+
+        private void DrawActionCell(Rect rect, ConfigNode node, bool isSelected, Action apply)
+        {
+            GUIStyle smallButtonStyle = EngineConfigStyles.SmallButton;
+
+            string configName = node.GetValue("name");
+            bool canUse = EngineConfigTechLevels.CanConfig(node);
+            bool unlocked = EngineConfigTechLevels.UnlockedConfig(node, _module.part);
+            double cost = EntryCostManager.Instance.ConfigEntryCost(configName);
+
+            if (cost <= 0 && !unlocked && canUse)
+                EntryCostManager.Instance.PurchaseConfig(configName, node.GetValue("techRequired"));
+
+            float buttonWidth = rect.width / 2f - 2f;
+            Rect switchRect = new Rect(rect.x, rect.y, buttonWidth, rect.height);
+            Rect purchaseRect = new Rect(rect.x + buttonWidth + 4f, rect.y, buttonWidth, rect.height);
+
+            GUI.enabled = !isSelected;
+            string switchLabel = isSelected ? "Active" : "Switch";
+            if (GUI.Button(switchRect, switchLabel, smallButtonStyle))
+            {
+                if (!unlocked && cost <= 0)
+                    EntryCostManager.Instance.PurchaseConfig(configName, node.GetValue("techRequired"));
+                apply?.Invoke();
+            }
+
+            GUI.enabled = canUse && !unlocked && cost > 0;
+            string purchaseLabel;
+            if (cost > 0)
+                purchaseLabel = unlocked ? "Owned" : $"Buy ({cost:N0}√)";
+            else
+                purchaseLabel = "Free";
+
+            if (GUI.Button(purchaseRect, purchaseLabel, smallButtonStyle))
+            {
+                if (EntryCostManager.Instance.PurchaseConfig(configName, node.GetValue("techRequired")))
+                    apply?.Invoke();
+            }
+
+            GUI.enabled = true;
+        }
+
+        private void DrawColumnSeparators(Rect rowRect)
+        {
+            float currentX = rowRect.x;
+            for (int i = 0; i < ConfigColumnWidths.Length - 1; i++)
+            {
+                if (IsColumnVisible(i))
+                {
+                    currentX += ConfigColumnWidths[i];
+                    Rect separatorRect = new Rect(currentX, rowRect.y, 1, rowRect.height);
+                    GUI.DrawTexture(separatorRect, _textures.ColumnSeparator);
+                }
+            }
+        }
+
+        #endregion
+
+        #region Column Management
+
+        private void DrawColumnMenu(Rect menuRect)
+        {
+            InitializeColumnVisibility();
+
+            string[] columnNames = {
+                "Name", "Thrust", "Min%", "ISP", "Mass", "Gimbal",
+                "Ignitions", "Ullage", "Press-Fed", "Rated (s)", "Tested (s)",
+                "Ign No Data", "Ign Max Data", "Burn No Data", "Burn Max Data",
+                "Tech", "Cost", "Actions"
+            };
+
+            float yPos = menuRect.y + 10;
+            float leftX = menuRect.x + 10;
+
+            GUIStyle headerStyle = EngineConfigStyles.MenuHeader;
+            GUIStyle labelStyle = EngineConfigStyles.MenuLabel;
+
+            GUI.Label(new Rect(leftX, yPos, menuRect.width - 20, 20), "Column Visibility", headerStyle);
+            yPos += 25;
+
+            if (Event.current.type == EventType.Repaint)
+            {
+                Texture2D separatorTex = Styles.CreateColorPixel(new Color(0.3f, 0.3f, 0.3f, 0.5f));
+                GUI.DrawTexture(new Rect(leftX, yPos, menuRect.width - 20, 1), separatorTex);
+            }
+            yPos += 10;
+
+            GUI.Label(new Rect(leftX + 100, yPos, 60, 20), "Full", headerStyle);
+            GUI.Label(new Rect(leftX + 170, yPos, 60, 20), "Compact", headerStyle);
+            yPos += 25;
+
+            Rect scrollRect = new Rect(leftX, yPos, menuRect.width - 20, menuRect.height - 80);
+
+            GUI.BeginGroup(scrollRect);
+            float itemY = 0;
+
+            for (int i = 0; i < columnNames.Length; i++)
+            {
+                GUI.Label(new Rect(5, itemY, 90, 20), columnNames[i], labelStyle);
+
+                bool newFullVisible = GUI.Toggle(new Rect(105, itemY, 20, 20), columnsVisibleFull[i], "");
+                if (newFullVisible != columnsVisibleFull[i])
+                {
+                    columnsVisibleFull[i] = newFullVisible;
+                }
+
+                bool newCompactVisible = GUI.Toggle(new Rect(175, itemY, 20, 20), columnsVisibleCompact[i], "");
+                if (newCompactVisible != columnsVisibleCompact[i])
+                {
+                    columnsVisibleCompact[i] = newCompactVisible;
+                }
+
+                itemY += 25;
+            }
+
+            GUI.EndGroup();
+
+            if (GUI.Button(new Rect(menuRect.x + menuRect.width - 60, menuRect.y + menuRect.height - 30, 50, 20), "Close"))
+            {
+                showColumnMenu = false;
+            }
+        }
+
+        private void InitializeColumnVisibility()
+        {
+            if (columnVisibilityInitialized)
+                return;
+
+            for (int i = 0; i < 18; i++)
+                columnsVisibleFull[i] = true;
+
+            for (int i = 0; i < 18; i++)
+                columnsVisibleCompact[i] = false;
+
+            int[] compactColumns = { 0, 1, 3, 4, 6, 9, 10, 15, 16, 17 };
+            foreach (int col in compactColumns)
+                columnsVisibleCompact[col] = true;
+
+            columnVisibilityInitialized = true;
+        }
+
+        private bool IsColumnVisible(int columnIndex)
+        {
+            InitializeColumnVisibility();
+
+            if (columnIndex < 0 || columnIndex >= 18)
+                return false;
+
+            return compactView ? columnsVisibleCompact[columnIndex] : columnsVisibleFull[columnIndex];
+        }
+
+        private void CalculateColumnWidths(List<ModuleEngineConfigsBase.ConfigRowDefinition> rows)
+        {
+            var cellStyle = new GUIStyle(GUI.skin.label)
+            {
+                fontSize = 14,
+                fontStyle = FontStyle.Bold,
+                padding = new RectOffset(5, 0, 0, 0)
+            };
+
+            for (int i = 0; i < ConfigColumnWidths.Length; i++)
+            {
+                ConfigColumnWidths[i] = 30f;
+            }
+
+            foreach (var row in rows)
+            {
+                string nameText = row.DisplayName;
+                if (row.Indent) nameText = "    ↳ " + nameText;
+
+                string[] cellValues = new string[]
+                {
+                    nameText,
+                    GetThrustString(row.Node),
+                    GetMinThrottleString(row.Node),
+                    GetIspString(row.Node),
+                    GetMassString(row.Node),
+                    GetGimbalString(row.Node),
+                    GetIgnitionsString(row.Node),
+                    GetBoolSymbol(row.Node, "ullage"),
+                    GetBoolSymbol(row.Node, "pressureFed"),
+                    GetRatedBurnTimeString(row.Node),
+                    GetTestedBurnTimeString(row.Node),
+                    GetIgnitionReliabilityStartString(row.Node),
+                    GetIgnitionReliabilityEndString(row.Node),
+                    GetCycleReliabilityStartString(row.Node),
+                    GetCycleReliabilityEndString(row.Node),
+                    GetTechString(row.Node),
+                    GetCostDeltaString(row.Node),
+                    ""
+                };
+
+                for (int i = 0; i < cellValues.Length; i++)
+                {
+                    if (!string.IsNullOrEmpty(cellValues[i]))
+                    {
+                        float width = cellStyle.CalcSize(new GUIContent(cellValues[i])).x + 10f;
+                        if (width > ConfigColumnWidths[i])
+                            ConfigColumnWidths[i] = width;
+                    }
+                }
+            }
+
+            ConfigColumnWidths[17] = 160f;
+            ConfigColumnWidths[7] = Mathf.Max(ConfigColumnWidths[7], 30f);
+            ConfigColumnWidths[8] = Mathf.Max(ConfigColumnWidths[8], 30f);
+            ConfigColumnWidths[9] = Mathf.Max(ConfigColumnWidths[9], 50f);
+            ConfigColumnWidths[10] = Mathf.Max(ConfigColumnWidths[10], 50f);
+        }
+
+        #endregion
+
+        #region Cell Formatters
+
+        internal string GetThrustString(ConfigNode node)
+        {
+            if (!node.HasValue(_module.thrustRating))
+                return "-";
+
+            float thrust = _module.scale * _techLevels.ThrustTL(node.GetValue(_module.thrustRating), node);
+            if (thrust >= 100f)
+                return $"{thrust:N0} kN";
+            return $"{thrust:N2} kN";
+        }
+
+        internal string GetMinThrottleString(ConfigNode node)
+        {
+            float value = -1f;
+            if (node.HasValue("minThrust") && node.HasValue(_module.thrustRating))
+            {
+                float.TryParse(node.GetValue("minThrust"), out float minT);
+                float.TryParse(node.GetValue(_module.thrustRating), out float maxT);
+                if (maxT > 0)
+                    value = minT / maxT;
+            }
+            else if (node.HasValue("throttle"))
+            {
+                float.TryParse(node.GetValue("throttle"), out value);
+            }
+
+            if (value < 0f)
+                return "-";
+            return value.ToString("P0");
+        }
+
+        internal string GetIspString(ConfigNode node)
+        {
+            if (node.HasNode("atmosphereCurve"))
+            {
+                FloatCurve isp = new FloatCurve();
+                isp.Load(node.GetNode("atmosphereCurve"));
+                float ispVac = isp.Evaluate(isp.maxTime);
+                float ispSL = isp.Evaluate(isp.minTime);
+                return $"{ispVac:N0}-{ispSL:N0}";
+            }
+
+            if (node.HasValue("IspSL") && node.HasValue("IspV"))
+            {
+                float.TryParse(node.GetValue("IspSL"), out float ispSL);
+                float.TryParse(node.GetValue("IspV"), out float ispV);
+                if (_module.techLevel != -1)
+                {
+                    TechLevel cTL = new TechLevel();
+                    if (cTL.Load(node, _module.techNodes, _module.engineType, _module.techLevel))
+                    {
+                        ispSL *= ModuleEngineConfigsBase.ispSLMult * cTL.AtmosphereCurve.Evaluate(1);
+                        ispV *= ModuleEngineConfigsBase.ispVMult * cTL.AtmosphereCurve.Evaluate(0);
+                    }
+                }
+                return $"{ispV:N0}-{ispSL:N0}";
+            }
+
+            return "-";
+        }
+
+        internal string GetMassString(ConfigNode node)
+        {
+            if (_module.origMass <= 0f)
+                return "-";
+
+            float cMass = _module.scale * _module.origMass * RFSettings.Instance.EngineMassMultiplier;
+            if (node.HasValue("massMult") && float.TryParse(node.GetValue("massMult"), out float ftmp))
+                cMass *= ftmp;
+
+            return $"{cMass:N3}t";
+        }
+
+        internal string GetGimbalString(ConfigNode node)
+        {
+            if (!_module.part.HasModuleImplementing<ModuleGimbal>())
+                return "<color=#9E9E9E>✗</color>";
+
+            var gimbals = _module.ExtractGimbals(node);
+
+            if (gimbals.Count == 0 && _module.techLevel != -1 && (!_module.gimbalTransform.Equals(string.Empty) || _module.useGimbalAnyway))
+            {
+                TechLevel cTL = new TechLevel();
+                if (cTL.Load(node, _module.techNodes, _module.engineType, _module.techLevel))
+                {
+                    float gimbalRange = cTL.GimbalRange;
+                    if (node.HasValue("gimbalMult"))
+                        gimbalRange *= float.Parse(node.GetValue("gimbalMult"), CultureInfo.InvariantCulture);
+
+                    if (gimbalRange >= 0)
+                        return $"{gimbalRange * _module.gimbalMult:0.#}°";
+                }
+            }
+
+            if (gimbals.Count == 0)
+            {
+                foreach (var gimbalMod in _module.part.Modules.OfType<ModuleGimbal>())
+                {
+                    if (gimbalMod != null)
+                    {
+                        var gimbal = new Gimbal(gimbalMod.gimbalRange, gimbalMod.gimbalRange, gimbalMod.gimbalRange, gimbalMod.gimbalRange, gimbalMod.gimbalRange);
+                        gimbals[gimbalMod.gimbalTransformName] = gimbal;
+                    }
+                }
+            }
+
+            if (gimbals.Count == 0)
+                return "<color=#9E9E9E>✗</color>";
+
+            var first = gimbals.Values.First();
+            bool allSame = gimbals.Values.All(g => g.gimbalRange == first.gimbalRange
+                && g.gimbalRangeXP == first.gimbalRangeXP
+                && g.gimbalRangeXN == first.gimbalRangeXN
+                && g.gimbalRangeYP == first.gimbalRangeYP
+                && g.gimbalRangeYN == first.gimbalRangeYN);
+
+            if (allSame)
+                return first.Info();
+
+            var uniqueInfos = gimbals.Values.Select(g => g.Info()).Distinct().OrderBy(s => s);
+            return string.Join(", ", uniqueInfos);
+        }
+
+        internal string GetIgnitionsString(ConfigNode node)
+        {
+            if (!node.HasValue("ignitions"))
+                return "-";
+
+            if (!int.TryParse(node.GetValue("ignitions"), out int ignitions))
+                return "∞";
+
+            int resolved = _techLevels.ConfigIgnitions(ignitions);
+            if (resolved == -1)
+                return "∞";
+            if (resolved == 0 && _module.literalZeroIgnitions)
+                return "<color=#FFEB3B>Gnd</color>";
+            return resolved.ToString();
+        }
+
+        internal string GetBoolSymbol(ConfigNode node, string key)
+        {
+            if (!node.HasValue(key))
+                return "<color=#9E9E9E>✗</color>";
+            bool isTrue = node.GetValue(key).ToLower() == "true";
+            return isTrue ? "<color=#FFA726>✓</color>" : "<color=#9E9E9E>✗</color>";
+        }
+
+        internal string GetRatedBurnTimeString(ConfigNode node)
+        {
+            bool hasRatedBurnTime = node.HasValue("ratedBurnTime");
+            bool hasRatedContinuousBurnTime = node.HasValue("ratedContinuousBurnTime");
+
+            if (!hasRatedBurnTime && !hasRatedContinuousBurnTime)
+                return "∞";
+
+            if (hasRatedBurnTime && hasRatedContinuousBurnTime)
+            {
+                string continuous = node.GetValue("ratedContinuousBurnTime");
+                string cumulative = node.GetValue("ratedBurnTime");
+                return $"{continuous}/{cumulative}";
+            }
+
+            return hasRatedBurnTime ? node.GetValue("ratedBurnTime") : node.GetValue("ratedContinuousBurnTime");
+        }
+
+        internal string GetTestedBurnTimeString(ConfigNode node)
+        {
+            if (!node.HasValue("testedBurnTime"))
+                return "-";
+
+            float testedBurnTime = 0f;
+            if (node.TryGetValue("testedBurnTime", ref testedBurnTime))
+                return testedBurnTime.ToString("F0");
+
+            return "-";
+        }
+
+        internal string GetIgnitionReliabilityStartString(ConfigNode node)
+        {
+            if (!node.HasValue("ignitionReliabilityStart"))
+                return "-";
+            if (float.TryParse(node.GetValue("ignitionReliabilityStart"), out float val))
+                return $"{val:P1}";
+            return "-";
+        }
+
+        internal string GetIgnitionReliabilityEndString(ConfigNode node)
+        {
+            if (!node.HasValue("ignitionReliabilityEnd"))
+                return "-";
+            if (float.TryParse(node.GetValue("ignitionReliabilityEnd"), out float val))
+                return $"{val:P1}";
+            return "-";
+        }
+
+        internal string GetCycleReliabilityStartString(ConfigNode node)
+        {
+            if (!node.HasValue("cycleReliabilityStart"))
+                return "-";
+            if (float.TryParse(node.GetValue("cycleReliabilityStart"), out float val))
+                return $"{val:P1}";
+            return "-";
+        }
+
+        internal string GetCycleReliabilityEndString(ConfigNode node)
+        {
+            if (!node.HasValue("cycleReliabilityEnd"))
+                return "-";
+            if (float.TryParse(node.GetValue("cycleReliabilityEnd"), out float val))
+                return $"{val:P1}";
+            return "-";
+        }
+
+        internal string GetTechString(ConfigNode node)
+        {
+            if (!node.HasValue("techRequired"))
+                return "-";
+
+            string tech = node.GetValue("techRequired");
+            if (ModuleEngineConfigsBase.techNameToTitle.TryGetValue(tech, out string title))
+                tech = title;
+
+            var words = tech.Split(' ');
+            if (words.Length <= 1)
+                return tech;
+
+            var abbreviated = words[0];
+            for (int i = 1; i < words.Length; i++)
+            {
+                if (words[i].Length > 4)
+                    abbreviated += "-" + words[i].Substring(0, 4);
+                else
+                    abbreviated += "-" + words[i];
+            }
+            return abbreviated;
+        }
+
+        internal string GetCostDeltaString(ConfigNode node)
+        {
+            if (!node.HasValue("cost"))
+                return "-";
+
+            float curCost = _module.scale * float.Parse(node.GetValue("cost"), CultureInfo.InvariantCulture);
+            if (_module.techLevel != -1)
+                curCost = _techLevels.CostTL(curCost, node) - _techLevels.CostTL(0f, node);
+
+            if (Mathf.Approximately(curCost, 0f))
+                return "-";
+
+            string sign = curCost < 0 ? string.Empty : "+";
+            return $"{sign}{curCost:N0}√";
+        }
+
+        #endregion
+
+        #region Tooltips
+
+        private string GetRowTooltip(ConfigNode node)
+        {
+            List<string> tooltipParts = new List<string>();
+
+            if (node.HasValue("description"))
+                tooltipParts.Add(node.GetValue("description"));
+
+            if (node.HasNode("PROPELLANT"))
+            {
+                float thrust = 0f;
+                float isp = 0f;
+
+                if (node.HasValue(_module.thrustRating) && float.TryParse(node.GetValue(_module.thrustRating), out float maxThrust))
+                    thrust = _techLevels.ThrustTL(node.GetValue(_module.thrustRating), node) * _module.scale;
+
+                if (node.HasNode("atmosphereCurve"))
+                {
+                    var atmCurve = new FloatCurve();
+                    atmCurve.Load(node.GetNode("atmosphereCurve"));
+                    isp = atmCurve.Evaluate(0f);
+                }
+
+                const float g0 = 9.80665f;
+                float thrustN = thrust * 1000f;
+                float totalMassFlow = (thrustN > 0f && isp > 0f) ? thrustN / (isp * g0) : 0f;
+
+                var propNodes = node.GetNodes("PROPELLANT");
+                float totalRatio = 0f;
+                foreach (var propNode in propNodes)
+                {
+                    string ratioStr = null;
+                    if (propNode.TryGetValue("ratio", ref ratioStr) && float.TryParse(ratioStr, out float ratio))
+                        totalRatio += ratio;
+                }
+
+                var propellantLines = new List<string>();
+                foreach (var propNode in propNodes)
+                {
+                    string name = propNode.GetValue("name");
+                    if (string.IsNullOrWhiteSpace(name)) continue;
+
+                    string line = $"  • {name}";
+
+                    string ratioStr2 = null;
+                    if (propNode.TryGetValue("ratio", ref ratioStr2) && float.TryParse(ratioStr2, out float ratio) && totalMassFlow > 0f && totalRatio > 0f)
+                    {
+                        float propMassFlow = totalMassFlow * (ratio / totalRatio);
+
+                        var resource = PartResourceLibrary.Instance?.GetDefinition(name);
+
+                        string massFlowStr = propMassFlow >= 1f
+                            ? $"{propMassFlow:F2} kg/s"
+                            : $"{propMassFlow * 1000f:F1} g/s";
+
+                        if (resource != null)
+                        {
+                            float volumeFlow = propMassFlow / (float)resource.density;
+                            line += $": {volumeFlow:F2} L/s ({massFlowStr})";
+                        }
+                        else
+                        {
+                            line += $": {massFlowStr}";
+                        }
+                    }
+
+                    propellantLines.Add(line);
+                }
+
+                if (propellantLines.Count > 0)
+                    tooltipParts.Add($"<b>Propellant Consumption:</b>\n{string.Join("\n", propellantLines)}");
+            }
+
+            return tooltipParts.Count > 0 ? string.Join("\n\n", tooltipParts) : string.Empty;
+        }
+
+        #endregion
+
+        #region Helper Methods
+
+        internal void MarkWindowDirty()
+        {
+            lastPartId = 0;
+        }
+
+        private void EditorLock()
+        {
+            if (!editorLocked)
+            {
+                EditorLogic.fetch.Lock(false, false, false, "RFGUILock");
+                editorLocked = true;
+                KSP.UI.Screens.Editor.PartListTooltipMasterController.Instance?.HideTooltip();
+            }
+        }
+
+        private void EditorUnlock()
+        {
+            if (editorLocked)
+            {
+                EditorLogic.fetch.Unlock("RFGUILock");
+                editorLocked = false;
+            }
+        }
+
+        private void EnsureTexturesAndStyles()
+        {
+            _textures.EnsureInitialized();
+            EngineConfigStyles.Initialize();
+        }
+
+        #endregion
+    }
+}

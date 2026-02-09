@@ -121,7 +121,7 @@ namespace RealFuels
             return info;
         }
 
-        protected override IEnumerable<ConfigRowDefinition> BuildConfigRows()
+        public override IEnumerable<ConfigRowDefinition> BuildConfigRows()
         {
             foreach (var node in FilteredDisplayConfigs(false))
             {
@@ -143,12 +143,11 @@ namespace RealFuels
             }
         }
 
-        protected override void DrawConfigSelectors(IEnumerable<ConfigNode> availableConfigNodes)
+        protected internal override void DrawConfigSelectors(IEnumerable<ConfigNode> availableConfigNodes)
         {
+            // Add custom toggle button UI before the config table
             if (GUILayout.Button(new GUIContent(ToggleText, toggleButtonHoverInfo)))
                 ToggleMode();
-
-            DrawConfigTable(BuildConfigRows());
         }
 
         [KSPAction("#RF_BimodalEngine_ToggleEngineMode")] // Toggle Engine Mode
