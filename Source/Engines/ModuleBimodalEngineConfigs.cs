@@ -301,9 +301,9 @@ namespace RealFuels
             if (animationStates == null) yield break;
 
             bool b9psNeedsReset = false;
-            if (B9PSModules != null && B9PSModules.Count != 0 && switchB9PSAtAnimationTime >= 0f)
+            if (Integrations.B9PSModules != null && Integrations.B9PSModules.Count != 0 && switchB9PSAtAnimationTime >= 0f)
             {
-                RequestB9PSVariantsForConfig(IsPrimaryMode ? SecondaryConfig(config) : GetConfigByName(configuration));
+                Integrations.RequestB9PSVariantsForConfig(IsPrimaryMode ? SecondaryConfig(config) : GetConfigByName(configuration));
                 b9psNeedsReset = true;
             }
 
@@ -321,7 +321,7 @@ namespace RealFuels
                     if (forward && animState.normalizedTime >= switchB9PSAtAnimationTime
                         || !forward && animState.normalizedTime <= switchB9PSAtAnimationTime)
                     {
-                        UpdateB9PSVariants();
+                        Integrations.UpdateB9PSVariants();
                         b9psNeedsReset = false;
                     }
                 }
@@ -329,7 +329,7 @@ namespace RealFuels
             }
             SetAnimationSpeed(0f);
 
-            if (b9psNeedsReset) UpdateB9PSVariants();
+            if (b9psNeedsReset) Integrations.UpdateB9PSVariants();
         }
     }
 }
