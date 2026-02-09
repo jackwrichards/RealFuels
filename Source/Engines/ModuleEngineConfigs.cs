@@ -1446,8 +1446,8 @@ namespace RealFuels
         // Column visibility customization
         private bool showColumnMenu = false;
         private static Rect columnMenuRect = new Rect(100, 100, 280, 650); // Separate window rect - tall enough for all columns
-        private static bool[] columnsVisibleFull = new bool[19];
-        private static bool[] columnsVisibleCompact = new bool[19];
+        private static bool[] columnsVisibleFull = new bool[18];
+        private static bool[] columnsVisibleCompact = new bool[18];
         private static bool columnVisibilityInitialized = false;
 
         // Simulation controls for data percentage and cluster size
@@ -1469,7 +1469,7 @@ namespace RealFuels
         private const int ConfigRowHeight = 22;
         private const int ConfigMaxVisibleRows = 16; // Max rows before scrolling (60% taller)
         // Dynamic column widths - calculated based on content
-        private float[] ConfigColumnWidths = new float[19]; // Added du column
+        private float[] ConfigColumnWidths = new float[18];
 
         private static Texture2D rowHoverTex;
         private static Texture2D rowCurrentTex;
@@ -1778,7 +1778,6 @@ namespace RealFuels
                     GetBoolSymbol(row.Node, "pressureFed"),
                     GetRatedBurnTimeString(row.Node),
                     GetTestedBurnTimeString(row.Node), // NEW: Tested burn time column
-                    GetFlightDataString(), // NEW: Data (du) column
                     GetIgnitionReliabilityStartString(row.Node),
                     GetIgnitionReliabilityEndString(row.Node),
                     GetCycleReliabilityStartString(row.Node),
@@ -1800,14 +1799,13 @@ namespace RealFuels
             }
 
             // Action column needs fixed width for two buttons
-            ConfigColumnWidths[18] = 160f;
+            ConfigColumnWidths[17] = 160f;
 
             // Set minimum widths for specific columns
             ConfigColumnWidths[7] = Mathf.Max(ConfigColumnWidths[7], 30f); // Ull
             ConfigColumnWidths[8] = Mathf.Max(ConfigColumnWidths[8], 30f); // PFed
             ConfigColumnWidths[9] = Mathf.Max(ConfigColumnWidths[9], 50f); // Rated burn
             ConfigColumnWidths[10] = Mathf.Max(ConfigColumnWidths[10], 50f); // Tested burn
-            ConfigColumnWidths[11] = Mathf.Max(ConfigColumnWidths[11], 80f); // Data (du)
         }
 
         protected void DrawConfigTable(IEnumerable<ConfigRowDefinition> rows)
@@ -1901,7 +1899,7 @@ namespace RealFuels
             // Column names
             string[] columnNames = {
                 "Name", "Thrust", "Min%", "ISP", "Mass", "Gimbal",
-                "Ignitions", "Ullage", "Press-Fed", "Rated (s)", "Tested (s)", "Data (du)",
+                "Ignitions", "Ullage", "Press-Fed", "Rated (s)", "Tested (s)",
                 "Ign No Data", "Ign Max Data", "Burn No Data", "Burn Max Data",
                 "Tech", "Cost", "Actions"
             };
@@ -2038,41 +2036,36 @@ namespace RealFuels
             }
             if (IsColumnVisible(11)) {
                 DrawHeaderCell(new Rect(currentX, headerRect.y, ConfigColumnWidths[11], headerRect.height),
-                    "Data (du)", "Current flight data from TestFlight");
+                    "Ign No Data", "Ignition reliability at 0 data");
                 currentX += ConfigColumnWidths[11];
             }
             if (IsColumnVisible(12)) {
                 DrawHeaderCell(new Rect(currentX, headerRect.y, ConfigColumnWidths[12], headerRect.height),
-                    "Ign No Data", "Ignition reliability at 0 data");
+                    "Ign Max Data", "Ignition reliability at max data");
                 currentX += ConfigColumnWidths[12];
             }
             if (IsColumnVisible(13)) {
                 DrawHeaderCell(new Rect(currentX, headerRect.y, ConfigColumnWidths[13], headerRect.height),
-                    "Ign Max Data", "Ignition reliability at max data");
+                    "Burn No Data", "Cycle reliability at 0 data");
                 currentX += ConfigColumnWidths[13];
             }
             if (IsColumnVisible(14)) {
                 DrawHeaderCell(new Rect(currentX, headerRect.y, ConfigColumnWidths[14], headerRect.height),
-                    "Burn No Data", "Cycle reliability at 0 data");
+                    "Burn Max Data", "Cycle reliability at max data");
                 currentX += ConfigColumnWidths[14];
             }
             if (IsColumnVisible(15)) {
                 DrawHeaderCell(new Rect(currentX, headerRect.y, ConfigColumnWidths[15], headerRect.height),
-                    "Burn Max Data", "Cycle reliability at max data");
+                    Localizer.GetStringByTag("#RF_Engine_Requires"), "Required technology");
                 currentX += ConfigColumnWidths[15];
             }
             if (IsColumnVisible(16)) {
                 DrawHeaderCell(new Rect(currentX, headerRect.y, ConfigColumnWidths[16], headerRect.height),
-                    Localizer.GetStringByTag("#RF_Engine_Requires"), "Required technology");
+                    "Extra Cost", "Extra cost for this config");
                 currentX += ConfigColumnWidths[16];
             }
             if (IsColumnVisible(17)) {
                 DrawHeaderCell(new Rect(currentX, headerRect.y, ConfigColumnWidths[17], headerRect.height),
-                    "Extra Cost", "Extra cost for this config");
-                currentX += ConfigColumnWidths[17];
-            }
-            if (IsColumnVisible(18)) {
-                DrawHeaderCell(new Rect(currentX, headerRect.y, ConfigColumnWidths[18], headerRect.height),
                     "", "Switch and purchase actions"); // No label, just tooltip
             }
         }
@@ -2191,42 +2184,37 @@ namespace RealFuels
             }
 
             if (IsColumnVisible(11)) {
-                GUI.Label(new Rect(currentX, rowRect.y, ConfigColumnWidths[11], rowRect.height), GetFlightDataString(), secondaryStyle);
+                GUI.Label(new Rect(currentX, rowRect.y, ConfigColumnWidths[11], rowRect.height), GetIgnitionReliabilityStartString(row.Node), secondaryStyle);
                 currentX += ConfigColumnWidths[11];
             }
 
             if (IsColumnVisible(12)) {
-                GUI.Label(new Rect(currentX, rowRect.y, ConfigColumnWidths[12], rowRect.height), GetIgnitionReliabilityStartString(row.Node), secondaryStyle);
+                GUI.Label(new Rect(currentX, rowRect.y, ConfigColumnWidths[12], rowRect.height), GetIgnitionReliabilityEndString(row.Node), secondaryStyle);
                 currentX += ConfigColumnWidths[12];
             }
 
             if (IsColumnVisible(13)) {
-                GUI.Label(new Rect(currentX, rowRect.y, ConfigColumnWidths[13], rowRect.height), GetIgnitionReliabilityEndString(row.Node), secondaryStyle);
+                GUI.Label(new Rect(currentX, rowRect.y, ConfigColumnWidths[13], rowRect.height), GetCycleReliabilityStartString(row.Node), secondaryStyle);
                 currentX += ConfigColumnWidths[13];
             }
 
             if (IsColumnVisible(14)) {
-                GUI.Label(new Rect(currentX, rowRect.y, ConfigColumnWidths[14], rowRect.height), GetCycleReliabilityStartString(row.Node), secondaryStyle);
+                GUI.Label(new Rect(currentX, rowRect.y, ConfigColumnWidths[14], rowRect.height), GetCycleReliabilityEndString(row.Node), secondaryStyle);
                 currentX += ConfigColumnWidths[14];
             }
 
             if (IsColumnVisible(15)) {
-                GUI.Label(new Rect(currentX, rowRect.y, ConfigColumnWidths[15], rowRect.height), GetCycleReliabilityEndString(row.Node), secondaryStyle);
+                GUI.Label(new Rect(currentX, rowRect.y, ConfigColumnWidths[15], rowRect.height), GetTechString(row.Node), secondaryStyle);
                 currentX += ConfigColumnWidths[15];
             }
 
             if (IsColumnVisible(16)) {
-                GUI.Label(new Rect(currentX, rowRect.y, ConfigColumnWidths[16], rowRect.height), GetTechString(row.Node), secondaryStyle);
+                GUI.Label(new Rect(currentX, rowRect.y, ConfigColumnWidths[16], rowRect.height), GetCostDeltaString(row.Node), secondaryStyle);
                 currentX += ConfigColumnWidths[16];
             }
 
             if (IsColumnVisible(17)) {
-                GUI.Label(new Rect(currentX, rowRect.y, ConfigColumnWidths[17], rowRect.height), GetCostDeltaString(row.Node), secondaryStyle);
-                currentX += ConfigColumnWidths[17];
-            }
-
-            if (IsColumnVisible(18)) {
-                DrawActionCell(new Rect(currentX, rowRect.y + 1, ConfigColumnWidths[18], rowRect.height - 2), row.Node, row.IsSelected, row.Apply);
+                DrawActionCell(new Rect(currentX, rowRect.y + 1, ConfigColumnWidths[17], rowRect.height - 2), row.Node, row.IsSelected, row.Apply);
             }
         }
 
@@ -2437,15 +2425,15 @@ namespace RealFuels
                 return;
 
             // Initialize full view: all columns visible by default
-            for (int i = 0; i < 19; i++)
+            for (int i = 0; i < 18; i++)
                 columnsVisibleFull[i] = true;
 
             // Initialize compact view: only essential columns
-            for (int i = 0; i < 19; i++)
+            for (int i = 0; i < 18; i++)
                 columnsVisibleCompact[i] = false;
 
             // Essential columns for compact view
-            int[] compactColumns = { 0, 1, 3, 4, 6, 9, 10, 11, 16, 17, 18 }; // 11 is Flight Data (moved after Tested)
+            int[] compactColumns = { 0, 1, 3, 4, 6, 9, 10, 15, 16, 17 }; // Tech, Cost, Actions
             foreach (int col in compactColumns)
                 columnsVisibleCompact[col] = true;
 
@@ -2456,7 +2444,7 @@ namespace RealFuels
         {
             InitializeColumnVisibility();
 
-            if (columnIndex < 0 || columnIndex >= 19)
+            if (columnIndex < 0 || columnIndex >= 18)
                 return false;
 
             return compactView ? columnsVisibleCompact[columnIndex] : columnsVisibleFull[columnIndex];
@@ -3867,7 +3855,7 @@ namespace RealFuels
             float bulletHeight = 18;
 
             // Failures section
-            GUI.Label(new Rect(leftColumnX, leftYPos, leftColumnWidth, bulletHeight), "An engine can fail in 5 ways:", bulletStyle);
+            GUI.Label(new Rect(leftColumnX, leftYPos, leftColumnWidth, bulletHeight), "An engine can fail in 4 ways:", bulletStyle);
             leftYPos += bulletHeight;
 
             // In-flight failures (based on weight distribution: total = 58)
@@ -3883,14 +3871,16 @@ namespace RealFuels
                 leftYPos += bulletHeight;
             }
 
-            // Ignition failure (separate from cycle failures)
-            string ignitionText = $"  Ignition Fail <color={purpleColor}>+1000</color> du";
-            GUI.Label(new Rect(leftColumnX, leftYPos, leftColumnWidth, bulletHeight), ignitionText, indentedBulletStyle);
-            leftYPos += bulletHeight + 4;
+            leftYPos += 4;
 
             // Running gains
             string runningText = $"Running gains <color={purpleColor}>{dataRate:F1}</color> du/s";
             GUI.Label(new Rect(leftColumnX, leftYPos, leftColumnWidth, bulletHeight), runningText, bulletStyle);
+            leftYPos += bulletHeight;
+
+            // Ignition failure (separate from cycle failures)
+            string ignitionText = $"Ignition Fail <color={purpleColor}>+1000</color> du";
+            GUI.Label(new Rect(leftColumnX, leftYPos, leftColumnWidth, bulletHeight), ignitionText, bulletStyle);
             leftYPos += bulletHeight + 8;
 
             // Footer note
@@ -3917,30 +3907,15 @@ namespace RealFuels
             var buttonStyle = new GUIStyle(GUI.skin.button) { fontSize = 12, fontStyle = FontStyle.Bold };
             var inputStyle = new GUIStyle(GUI.skin.textField) { fontSize = 12, fontStyle = FontStyle.Bold, alignment = TextAnchor.MiddleCenter };
 
-            // Buttons row - all horizontal
-            float logBtnWidth = 60f;
-            float btnSpacing = 4f;
-            float resetBtnWidth = rightColumnWidth - 24 - (logBtnWidth * 2) - (btnSpacing * 2);
+            // Section header
+            sectionStyle.normal.textColor = new Color(0.8f, 0.7f, 1.0f); // Light purple/lavender
+            GUI.Label(new Rect(rightColumnX, rightYPos, rightColumnWidth, 20), "Simulate:", sectionStyle);
+            rightYPos += 24;
 
-            var boldButtonStyle = new GUIStyle(buttonStyle) { fontStyle = FontStyle.Bold };
-
-            // X-axis log scale toggle
-            string toggleLabelX = useLogScaleX ? "X: Lin" : "X: Log";
-            if (GUI.Button(new Rect(rightColumnX + 8, rightYPos, logBtnWidth, 20), toggleLabelX, boldButtonStyle))
-            {
-                useLogScaleX = !useLogScaleX;
-            }
-
-            // Y-axis log scale toggle
-            string toggleLabelY = useLogScaleY ? "Y: Lin" : "Y: Log";
-            if (GUI.Button(new Rect(rightColumnX + 8 + logBtnWidth + btnSpacing, rightYPos, logBtnWidth, 20), toggleLabelY, boldButtonStyle))
-            {
-                useLogScaleY = !useLogScaleY;
-            }
-
-            // Reset button
-            string resetButtonText = "Reset All";
-            if (GUI.Button(new Rect(rightColumnX + 8 + (logBtnWidth + btnSpacing) * 2, rightYPos, resetBtnWidth, 20), resetButtonText, buttonStyle))
+            // Reset button (full width)
+            float resetBtnWidth = rightColumnWidth - 16;
+            string resetButtonText = hasRealData ? $"Set to Current du ({realCurrentData:F0})" : "Set to Current du (0)";
+            if (GUI.Button(new Rect(rightColumnX + 8, rightYPos, resetBtnWidth, 20), resetButtonText, buttonStyle))
             {
                 // Reset data value
                 if (hasRealData)
