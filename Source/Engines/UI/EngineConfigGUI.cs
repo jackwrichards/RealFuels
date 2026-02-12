@@ -43,7 +43,7 @@ namespace RealFuels
 
         private Vector2 configScrollPos = Vector2.zero;
         private GUIContent configGuiContent;
-        private static bool compactView = false;
+        private static bool compactView = true; // Default to compact view
         private bool useLogScaleX = false;
         private bool useLogScaleY = false;
         private static bool showBottomSection = true;
@@ -61,6 +61,9 @@ namespace RealFuels
         private int clusterSize = 1;
         private string clusterSizeInput = "1";
         private string dataValueInput = "0";
+        private float sliderTime = 100f;
+        private string sliderTimeInput = "100.0";
+        private bool includeIgnition = false;
 
         private const int ConfigRowHeight = 22;
         private const int ConfigMaxVisibleRows = 16;
@@ -213,9 +216,9 @@ namespace RealFuels
                     tooltipY = mousePos.y - 5;
                 }
 
-                // Draw tooltip with higher depth (negative value = on top)
+                // Draw tooltip with maximum priority depth (most negative = on top)
                 int oldDepth = GUI.depth;
-                GUI.depth = -1000;
+                GUI.depth = -100000; // Use very negative depth to ensure it's on top of everything
                 GUI.Box(new Rect(tooltipX, tooltipY, actualTooltipWidth, tooltipHeight), displayText, tooltipStyle);
                 GUI.depth = oldDepth;
             }
@@ -282,8 +285,10 @@ namespace RealFuels
                     Chart.ClusterSize = clusterSize;
                     Chart.ClusterSizeInput = clusterSizeInput;
                     Chart.DataValueInput = dataValueInput;
+                    Chart.SliderTimeInput = sliderTimeInput;
+                    Chart.IncludeIgnition = includeIgnition;
 
-                    Chart.Draw(_module.config, guiWindowRect.width - 10, 375);
+                    Chart.Draw(_module.config, guiWindowRect.width - 10, 375, ref sliderTime);
 
                     useLogScaleX = Chart.UseLogScaleX;
                     useLogScaleY = Chart.UseLogScaleY;
@@ -292,6 +297,8 @@ namespace RealFuels
                     clusterSize = Chart.ClusterSize;
                     clusterSizeInput = Chart.ClusterSizeInput;
                     dataValueInput = Chart.DataValueInput;
+                    sliderTimeInput = Chart.SliderTimeInput;
+                    includeIgnition = Chart.IncludeIgnition;
 
                     GUILayout.Space(6);
                 }
@@ -448,7 +455,8 @@ namespace RealFuels
                 Localizer.GetStringByTag("#RF_Engine_Isp"), Localizer.GetStringByTag("#RF_Engine_Enginemass"),
                 Localizer.GetStringByTag("#RF_Engine_TLTInfo_Gimbal"), Localizer.GetStringByTag("#RF_EngineRF_Ignitions"),
                 Localizer.GetStringByTag("#RF_Engine_ullage"), Localizer.GetStringByTag("#RF_Engine_pressureFed"),
-                "Rated (s)", "Tested (s)", "Ign No Data", "Ign Max Data", "Burn No Data", "Burn Max Data",
+                "Rated (s)", "Tested (s)", "Ign Reliability", "Burn No Data", "Burn Max Data",
+                "Survival @ Time",
                 Localizer.GetStringByTag("#RF_Engine_Requires"), "Extra Cost", ""
             };
             string[] tooltips = {
@@ -456,8 +464,9 @@ namespace RealFuels
                 "Sea level and vacuum Isp", "Engine mass", "Gimbal range", "Ignitions",
                 "Ullage requirement", "Pressure-fed", "Rated burn time",
                 "Tested burn time (real-world test duration)",
-                "Ignition reliability at 0 data", "Ignition reliability at max data",
+                "Ignition reliability (starting / max data)",
                 "Cycle reliability at 0 data", "Cycle reliability at max data",
+                "Survival probability at slider time (starting / max data)",
                 "Required technology", "Extra cost for this config", "Switch and purchase actions"
             };
 
@@ -524,10 +533,10 @@ namespace RealFuels
             drawCell(8, GetBoolSymbol(row.Node, "pressureFed"));
             drawCell(9, GetRatedBurnTimeString(row.Node));
             drawCell(10, GetTestedBurnTimeString(row.Node));
-            drawCell(11, GetIgnitionReliabilityStartString(row.Node));
-            drawCell(12, GetIgnitionReliabilityEndString(row.Node));
-            drawCell(13, GetCycleReliabilityStartString(row.Node));
-            drawCell(14, GetCycleReliabilityEndString(row.Node));
+            drawCell(11, GetIgnitionReliabilityString(row.Node));
+            drawCell(12, GetCycleReliabilityStartString(row.Node));
+            drawCell(13, GetCycleReliabilityEndString(row.Node));
+            drawCell(14, GetSurvivalAtTimeString(row.Node));
             drawCell(15, GetTechString(row.Node));
             drawCell(16, GetCostDeltaString(row.Node));
 
@@ -639,8 +648,8 @@ namespace RealFuels
             string[] columnNames = {
                 "Name", "Thrust", "Min%", "ISP", "Mass", "Gimbal",
                 "Ignitions", "Ullage", "Press-Fed", "Rated (s)", "Tested (s)",
-                "Ign No Data", "Ign Max Data", "Burn No Data", "Burn Max Data",
-                "Tech", "Cost", "Actions"
+                "Ign Rel.", "Burn No Data", "Burn Max Data",
+                "Survival", "Tech", "Cost", "Actions"
             };
 
             float yPos = menuRect.y + 5;
@@ -694,13 +703,15 @@ namespace RealFuels
             if (columnVisibilityInitialized)
                 return;
 
+            // Full view: all columns visible
             for (int i = 0; i < 18; i++)
                 columnsVisibleFull[i] = true;
 
+            // Compact view: Name, Thrust, ISP, Mass, Ignitions, Ullage, Press-Fed, Ign Rel., Survival, Tech, Cost, Actions
             for (int i = 0; i < 18; i++)
                 columnsVisibleCompact[i] = false;
 
-            int[] compactColumns = { 0, 1, 3, 4, 6, 9, 10, 15, 16, 17 };
+            int[] compactColumns = { 0, 1, 3, 4, 6, 7, 8, 11, 14, 15, 16, 17 };
             foreach (int col in compactColumns)
                 columnsVisibleCompact[col] = true;
 
@@ -749,10 +760,10 @@ namespace RealFuels
                     GetBoolSymbol(row.Node, "pressureFed"),
                     GetRatedBurnTimeString(row.Node),
                     GetTestedBurnTimeString(row.Node),
-                    GetIgnitionReliabilityStartString(row.Node),
-                    GetIgnitionReliabilityEndString(row.Node),
+                    GetIgnitionReliabilityString(row.Node),
                     GetCycleReliabilityStartString(row.Node),
                     GetCycleReliabilityEndString(row.Node),
+                    GetSurvivalAtTimeString(row.Node),
                     GetTechString(row.Node),
                     GetCostDeltaString(row.Node),
                     ""
@@ -778,9 +789,9 @@ namespace RealFuels
                 bool unlocked = EngineConfigTechLevels.UnlockedConfig(row.Node, _module.part);
                 double cost = EntryCostManager.Instance.ConfigEntryCost(configName);
 
-                // Calculate Switch button width
+                // Calculate Switch button width (must match DrawActionCell padding)
                 string switchLabel = "Switch";
-                float switchWidth = buttonStyle.CalcSize(new GUIContent(switchLabel)).x;
+                float switchWidth = buttonStyle.CalcSize(new GUIContent(switchLabel)).x + 10f; // Add padding to match DrawActionCell
 
                 // Calculate Purchase button width (can vary based on cost)
                 string purchaseLabel;
@@ -797,10 +808,10 @@ namespace RealFuels
                 {
                     purchaseLabel = unlocked ? "Owned" : "Free";
                 }
-                float purchaseWidth = buttonStyle.CalcSize(new GUIContent(purchaseLabel)).x;
+                float purchaseWidth = buttonStyle.CalcSize(new GUIContent(purchaseLabel)).x + 10f; // Add padding to match DrawActionCell
 
-                // Total width = both buttons + spacing between them
-                float totalWidth = switchWidth + purchaseWidth + 8f; // 4px spacing between buttons
+                // Total width = both buttons + spacing between them (must match DrawActionCell)
+                float totalWidth = switchWidth + purchaseWidth + 4f; // 4px spacing to match DrawActionCell
                 if (totalWidth > maxActionWidth)
                     maxActionWidth = totalWidth;
             }
@@ -810,6 +821,11 @@ namespace RealFuels
             ConfigColumnWidths[8] = Mathf.Max(ConfigColumnWidths[8], 30f);
             ConfigColumnWidths[9] = Mathf.Max(ConfigColumnWidths[9], 50f);
             ConfigColumnWidths[10] = Mathf.Max(ConfigColumnWidths[10], 50f);
+
+            // Fix survival column (index 14) to maximum width to prevent window resizing during slider use
+            // Calculate width based on "100.0% / 100.0%" (the widest possible value)
+            float maxSurvivalWidth = cellStyle.CalcSize(new GUIContent("100.0% / 100.0%")).x + 10f;
+            ConfigColumnWidths[14] = maxSurvivalWidth;
         }
 
         #endregion
@@ -993,22 +1009,15 @@ namespace RealFuels
             return "-";
         }
 
-        internal string GetIgnitionReliabilityStartString(ConfigNode node)
+        internal string GetIgnitionReliabilityString(ConfigNode node)
         {
-            if (!node.HasValue("ignitionReliabilityStart"))
+            if (!node.HasValue("ignitionReliabilityStart") || !node.HasValue("ignitionReliabilityEnd"))
                 return "-";
-            if (float.TryParse(node.GetValue("ignitionReliabilityStart"), out float val))
-                return $"{val:P1}";
-            return "-";
-        }
 
-        internal string GetIgnitionReliabilityEndString(ConfigNode node)
-        {
-            if (!node.HasValue("ignitionReliabilityEnd"))
-                return "-";
-            if (float.TryParse(node.GetValue("ignitionReliabilityEnd"), out float val))
-                return $"{val:P1}";
-            return "-";
+            if (!float.TryParse(node.GetValue("ignitionReliabilityStart"), out float valStart)) return "-";
+            if (!float.TryParse(node.GetValue("ignitionReliabilityEnd"), out float valEnd)) return "-";
+
+            return $"{valStart:P1} / {valEnd:P1}";
         }
 
         internal string GetCycleReliabilityStartString(ConfigNode node)
@@ -1027,6 +1036,39 @@ namespace RealFuels
             if (float.TryParse(node.GetValue("cycleReliabilityEnd"), out float val))
                 return $"{val:P1}";
             return "-";
+        }
+
+        internal string GetSurvivalAtTimeString(ConfigNode node)
+        {
+            // Check if we have reliability data
+            if (!node.HasValue("cycleReliabilityStart") || !node.HasValue("cycleReliabilityEnd") || !node.HasValue("ratedBurnTime"))
+                return "-";
+
+            if (!float.TryParse(node.GetValue("cycleReliabilityStart"), out float cycleReliabilityStart)) return "-";
+            if (!float.TryParse(node.GetValue("cycleReliabilityEnd"), out float cycleReliabilityEnd)) return "-";
+            if (!float.TryParse(node.GetValue("ratedBurnTime"), out float ratedBurnTime)) return "-";
+
+            if (cycleReliabilityStart <= 0f || cycleReliabilityEnd <= 0f || ratedBurnTime <= 0f) return "-";
+
+            // Build cycle curve
+            float testedBurnTime = 0f;
+            bool hasTestedBurnTime = node.TryGetValue("testedBurnTime", ref testedBurnTime) && testedBurnTime > ratedBurnTime;
+            float overburnPenalty = 2.0f;
+            node.TryGetValue("overburnPenalty", ref overburnPenalty);
+            FloatCurve cycleCurve = ChartMath.BuildTestFlightCycleCurve(ratedBurnTime, testedBurnTime, overburnPenalty, hasTestedBurnTime);
+
+            // Calculate survival at slider time
+            float baseRateStart = -Mathf.Log(cycleReliabilityStart) / ratedBurnTime;
+            float baseRateEnd = -Mathf.Log(cycleReliabilityEnd) / ratedBurnTime;
+
+            float surviveStart = ChartMath.CalculateSurvivalProbAtTime(sliderTime, ratedBurnTime, cycleReliabilityStart, baseRateStart, cycleCurve);
+            float surviveEnd = ChartMath.CalculateSurvivalProbAtTime(sliderTime, ratedBurnTime, cycleReliabilityEnd, baseRateEnd, cycleCurve);
+
+            // Faded colors for better readability in table
+            string fadedOrange = "#FFB380";
+            string fadedGreen = "#80E680";
+
+            return $"<color={fadedOrange}>{surviveStart:P1}</color> / <color={fadedGreen}>{surviveEnd:P1}</color>";
         }
 
         internal string GetTechString(ConfigNode node)

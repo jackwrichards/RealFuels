@@ -1103,16 +1103,36 @@ namespace RealFuels
 
         public static bool userClosedWindow = false;
 
+        // Track the currently open GUI to ensure only one is visible at a time
+        private static ModuleEngineConfigsBase currentlyOpenGUI = null;
+
         private void OnPartActionGuiDismiss(Part p)
         {
             if (p == part || p.isSymmetryCounterPart(part))
+            {
                 showRFGUI = false;
+                // Clear the currently open GUI tracker if it's this instance
+                if (currentlyOpenGUI == this)
+                    currentlyOpenGUI = null;
+            }
         }
 
         private void OnPartActionUIShown(UIPartActionWindow window, Part p)
         {
             if (p == part && !userClosedWindow)
+            {
+                // Close any previously open GUI before opening this one
+                if (currentlyOpenGUI != null && currentlyOpenGUI != this)
+                {
+                    currentlyOpenGUI.showRFGUI = false;
+                }
+
                 showRFGUI = isMaster;
+
+                // Track this as the currently open GUI
+                if (isMaster)
+                    currentlyOpenGUI = this;
+            }
         }
 
         public override void OnInactive()
@@ -1249,7 +1269,24 @@ namespace RealFuels
                 if (showRFGUI && !lastShowRFGUI)
                 {
                     userClosedWindow = false;
+
+                    // Close any previously open GUI before opening this one
+                    if (currentlyOpenGUI != null && currentlyOpenGUI != this)
+                    {
+                        currentlyOpenGUI.showRFGUI = false;
+                    }
+
+                    // Track this as the currently open GUI
+                    currentlyOpenGUI = this;
                 }
+                // If the user clicked the PAW button to hide the GUI
+                else if (!showRFGUI && lastShowRFGUI)
+                {
+                    // Clear the currently open GUI tracker if it's this instance
+                    if (currentlyOpenGUI == this)
+                        currentlyOpenGUI = null;
+                }
+
                 lastShowRFGUI = showRFGUI;
 
                 GUI.OnGUI();
@@ -1260,6 +1297,10 @@ namespace RealFuels
         {
             showRFGUI = false;
             userClosedWindow = true;
+
+            // Clear the currently open GUI tracker if it's this instance
+            if (currentlyOpenGUI == this)
+                currentlyOpenGUI = null;
         }
 
 
